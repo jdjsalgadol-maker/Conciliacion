@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import io
 
-st.set_page_config(page_title="Conciliador GNB Multibanco", layout="wide")
+st.set_page_config(page_title="Conciliacion general @JuanS", layout="wide")
 
 hide_style = """
     <style>
@@ -13,8 +13,8 @@ hide_style = """
 """
 st.markdown(hide_style, unsafe_allow_html=True)
 
-st.title("🏦 Conciliador GNB - Multibanco")
-st.write("Sube tu archivo consolidado. El sistema conciliará banco por banco y te devolverá un Excel con pestañas separadas.")
+st.title("🏦 Conciliacion general @JuanS 🤖")
+st.write("Sube tu archivo todos los bancos. Juan conciliará banco por banco y te devolverá un Excel con pestañas separadas.")
 
 archivo_subido = st.file_uploader("Selecciona el archivo consolidado de Excel", type=['xlsx'])
 
