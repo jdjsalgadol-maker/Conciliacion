@@ -15,7 +15,7 @@ hide_style = """
 st.markdown(hide_style, unsafe_allow_html=True)
 
 st.title("🏦 Conciliación General Multibanco 🤖")
-st.write("Sube tu archivo consolidado. El sistema leerá todas las pestañas automáticamente, completará la marcación de bancos y aplicará reglas de emparejamiento (FIFO).")
+st.write("Sube tu archivo consolidado. El sistema leerá todas las pestañas automáticamente, completará la marcación de bancos, aplicará reglas de emparejamiento (FIFO) y formateará fechas y valores.")
 
 archivo_subido = st.file_uploader("Selecciona el archivo de Excel o CSV", type=['xlsx', 'csv'])
 
@@ -27,12 +27,10 @@ if archivo_subido is not None:
             if archivo_subido.name.lower().endswith('.csv'):
                 df = pd.read_csv(archivo_subido)
             else:
-                # sheet_name=None lee TODAS las pestañas como un diccionario.
-                # Luego pd.concat las une todas en un solo DataFrame sin importar cómo se llamen.
                 diccionario_hojas = pd.read_excel(archivo_subido, sheet_name=None)
                 df = pd.concat(diccionario_hojas.values(), ignore_index=True)
             
-            # Limpiar nombres de columnas para evitar fallos por espacios invisibles
+            # Limpiar nombres de columnas
             df.columns = df.columns.str.strip()
             
             # --- 2. MAPEO SEGURO Y DINÁMICO DE COLUMNAS ---
@@ -44,7 +42,6 @@ if archivo_subido is not None:
             col_banco = 'Clave referencia 3'
             col_doc = 'Nº documento' if 'Nº documento' in df.columns else 'Nº doc.'
 
-            # Si después de leer las hojas no existe la columna documento, detenemos para no arrojar errores raros
             if col_doc not in df.columns:
                 st.error(f"No se encontró la columna de documento ({col_doc}) en ninguna de las pestañas.")
                 st.stop()
@@ -84,23 +81,20 @@ if archivo_subido is not None:
 
             df[col_banco] = bancos_completados
 
-            # Eliminar las filas de subtotales (Cuenta de mayor)
             if col_asignacion in df.columns:
                 df = df[~df[col_asignacion].astype(str).str.contains("Cuenta de mayor", case=False, na=False)].copy()
 
             # --- 4. LIMPIEZA Y ORDENAMIENTO (FIFO) ---
             df[col_doc] = pd.to_numeric(df[col_doc], errors='coerce')
-            
-            # Limpiar filas basura que hayan quedado al unir pestañas (ej. filas vacías)
             df = df.dropna(subset=[col_doc, col_clave]).reset_index(drop=True)
-            
             df = df.sort_values(by=[col_doc], ascending=True).reset_index(drop=True)
             
             df['ID_Temp'] = df.index
             df[col_clave] = df[col_clave].astype(str).str.strip().str.replace('.0', '', regex=False)
             df[col_banco] = df[col_banco].astype(str).str.strip()
             
-            df[col_importe] = pd.to_numeric(df[col_importe], errors='coerce').fillna(0).round(2)
+            # Garantizar que el importe sea numérico para Excel y calcular el valor ABSOLUTO
+            df[col_importe] = pd.to_numeric(df[col_importe], errors='coerce').fillna(0).astype(float)
             df['Abs_Importe'] = df[col_importe].abs() 
             
             df[col_fecha] = pd.to_datetime(df[col_fecha], errors='coerce').dt.date
@@ -110,39 +104,28 @@ if archivo_subido is not None:
             df_40 = df[df[col_clave] == '40']
             df_50 = df[df[col_clave] == '50']
             
-            c1 = pd.merge(df_40, df_50, 
-                          left_on=[col_banco, 'Abs_Importe', col_fecha, col_referencia], 
-                          right_on=[col_banco, 'Abs_Importe', col_fecha, col_referencia], 
-                          suffixes=('_40', '_50'))
+            c1 = pd.merge(df_40, df_50, left_on=[col_banco, 'Abs_Importe', col_fecha, col_referencia], right_on=[col_banco, 'Abs_Importe', col_fecha, col_referencia], suffixes=('_40', '_50'))
+            c2 = pd.merge(df_40, df_50, left_on=[col_banco, 'Abs_Importe', col_fecha, col_asignacion], right_on=[col_banco, 'Abs_Importe', col_fecha, col_referencia], suffixes=('_40', '_50'))
+            c3 = pd.merge(df_40, df_50, left_on=[col_banco, 'Abs_Importe', col_fecha, col_referencia], right_on=[col_banco, 'Abs_Importe', col_fecha, col_asignacion], suffixes=('_40', '_50'))
             
-            c2 = pd.merge(df_40, df_50, 
-                          left_on=[col_banco, 'Abs_Importe', col_fecha, col_asignacion], 
-                          right_on=[col_banco, 'Abs_Importe', col_fecha, col_referencia], 
-                          suffixes=('_40', '_50'))
-            
-            c3 = pd.merge(df_40, df_50, 
-                          left_on=[col_banco, 'Abs_Importe', col_fecha, col_referencia], 
-                          right_on=[col_banco, 'Abs_Importe', col_fecha, col_asignacion], 
-                          suffixes=('_40', '_50'))
-            
-            ind_r1 = set(c1['ID_Temp_40']).union(set(c1['ID_Temp_50'])) \
-                     .union(set(c2['ID_Temp_40'])).union(set(c2['ID_Temp_50'])) \
-                     .union(set(c3['ID_Temp_40'])).union(set(c3['ID_Temp_50']))
-                     
+            ind_r1 = set(c1['ID_Temp_40']).union(set(c1['ID_Temp_50'])).union(set(c2['ID_Temp_40'])).union(set(c2['ID_Temp_50'])).union(set(c3['ID_Temp_40'])).union(set(c3['ID_Temp_50']))
             df.loc[df['ID_Temp'].isin(ind_r1), 'Estado_Conciliacion'] = 'Conciliado Parte 1'
 
             df_p = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
             df_p['Turno'] = df_p.groupby([col_banco, 'Abs_Importe', col_fecha, col_clave]).cumcount()
             
-            c_n = pd.merge(df_p[df_p[col_clave]=='40'], df_p[df_p[col_clave]=='50'], 
-                           on=[col_banco, 'Abs_Importe', col_fecha, 'Turno'], 
-                           suffixes=('_4', '_5'))
-            
+            c_n = pd.merge(df_p[df_p[col_clave]=='40'], df_p[df_p[col_clave]=='50'], on=[col_banco, 'Abs_Importe', col_fecha, 'Turno'], suffixes=('_4', '_5'))
             ind_r2 = set(c_n['ID_Temp_4']).union(set(c_n['ID_Temp_5']))
             df.loc[df['ID_Temp'].isin(ind_r2), 'Estado_Conciliacion'] = 'Conciliado Parte 2'
 
-            # --- 6. LIMPIEZA FINAL ---
-            df_final = df.drop(columns=['ID_Temp', 'Abs_Importe'])
+            # --- 6. LIMPIEZA FINAL Y FORMATO DE FECHAS ---
+            df_final = df.drop(columns=['ID_Temp', 'Abs_Importe', 'Turno'], errors='ignore')
+
+            # Identificar todas las columnas que representan fechas (Fe.contabilización, Fecha valor, etc.)
+            columnas_fecha = [c for c in df_final.columns if 'fe.' in c.lower() or 'fecha' in c.lower() or 'fe-' in c.lower()]
+            for col_f in columnas_fecha:
+                # Convertir a formato de fecha corta (DD/MM/YYYY)
+                df_final[col_f] = pd.to_datetime(df_final[col_f], errors='coerce').dt.strftime('%d/%m/%Y')
 
             # --- FUNCION DE COLOR ---
             def resaltar_conciliados(row):
@@ -158,7 +141,10 @@ if archivo_subido is not None:
             
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 for banco in bancos_unicos:
-                    df_banco = df_final[df_final[col_banco] == banco]
+                    df_banco = df_final[df_final[col_banco] == banco].copy()
+                    
+                    # ORDENAR DE MENOR A MAYOR POR EL IMPORTE (Columna I)
+                    df_banco = df_banco.sort_values(by=col_importe, ascending=True)
                     
                     nombre_pestana = str(banco)[:31].replace('/', '-').replace('\\', '-').replace(':', '').replace('?', '').replace('*', '').replace('[', '').replace(']', '')
                     if not nombre_pestana.strip() or nombre_pestana.lower() == 'nan':
