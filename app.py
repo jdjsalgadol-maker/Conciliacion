@@ -15,7 +15,7 @@ hide_style = """
 st.markdown(hide_style, unsafe_allow_html=True)
 
 st.title("🏦 Conciliación General Multibanco 🤖")
-st.write("Sube tu archivo consolidado. El sistema aplicará emparejamiento exacto y luego un análisis integral de alertas (fechas desfasadas y reclasificaciones de banco) en una pestaña consolidada.")
+st.write("Sube tu archivo consolidado. El sistema aplicará emparejamiento exacto y análisis integral de alertas (fechas, bancos y diferencias de valor por ajuste al peso).")
 
 archivo_subido = st.file_uploader("Selecciona el archivo de Excel o CSV", type=['xlsx', 'csv'])
 
@@ -143,13 +143,26 @@ if archivo_subido is not None:
             df_40_nov = df_40_nov[~df_40_nov['ID_Temp'].isin(ind_date)]
             df_50_nov = df_50_nov[~df_50_nov['ID_Temp'].isin(ind_date)]
 
-            # Alerta B: Sugerencia: Reclasificación de banco (mismo importe, fecha y ref, pero distinto banco)
+            # Alerta B: Sugerencia: Reclasificación de banco (mismo importe, fecha y ref, distinto banco)
             s_bank = pd.merge(df_40_nov, df_50_nov, on=['Abs_Importe', col_fecha, 'Ref_Limpia'], suffixes=('_40', '_50'))
             s_bank = s_bank[s_bank[f'{col_banco}_40'] != s_bank[f'{col_banco}_50']]
             s_bank = s_bank.drop_duplicates(subset=['ID_Temp_40']).drop_duplicates(subset=['ID_Temp_50'])
             
             ind_bank = set(s_bank['ID_Temp_40']).union(set(s_bank['ID_Temp_50']))
             df.loc[df['ID_Temp'].isin(ind_bank), 'Estado_Conciliacion'] = 'Sugerencia: Reclasificación de banco'
+            
+            # Actualizamos excluyendo los que ya marcamos para la siguiente regla
+            df_40_nov = df_40_nov[~df_40_nov['ID_Temp'].isin(ind_bank)]
+            df_50_nov = df_50_nov[~df_50_nov['ID_Temp'].isin(ind_bank)]
+
+            # Alerta C: Revisar diferencia de valor (margen de hasta 100 pesos, mismo banco, fecha y ref)
+            s_val = pd.merge(df_40_nov, df_50_nov, on=[col_banco, col_fecha, 'Ref_Limpia'], suffixes=('_40', '_50'))
+            s_val['Dif_Valor'] = (s_val['Abs_Importe_40'] - s_val['Abs_Importe_50']).abs()
+            s_val = s_val[(s_val['Dif_Valor'] > 0) & (s_val['Dif_Valor'] <= 100)]
+            s_val = s_val.drop_duplicates(subset=['ID_Temp_40']).drop_duplicates(subset=['ID_Temp_50'])
+            
+            ind_val = set(s_val['ID_Temp_40']).union(set(s_val['ID_Temp_50']))
+            df.loc[df['ID_Temp'].isin(ind_val), 'Estado_Conciliacion'] = 'Revisar diferencia de valor'
 
             # --- 7. LIMPIEZA FINAL Y FORMATO DE FECHAS ---
             df_final = df.drop(columns=['ID_Temp', 'Abs_Importe', 'Turno', 'Fecha_Calc', 'Ref_Limpia'], errors='ignore')
@@ -170,6 +183,8 @@ if archivo_subido is not None:
                     return ['background-color: #FCF3CF'] * len(row) # Amarillo (Alerta Fecha)
                 elif 'reclasificación' in est.lower():
                     return ['background-color: #F5B7B1'] * len(row) # Rojo Claro (Alerta Banco)
+                elif 'diferencia de valor' in est.lower():
+                    return ['background-color: #FAD7A1'] * len(row) # Naranja Claro (Alerta Valor)
                 return [''] * len(row)
 
             # --- 8. EXPORTACIÓN DIVIDIDA POR BANCO + PESTAÑA NOVEDADES ---
@@ -190,7 +205,8 @@ if archivo_subido is not None:
                     styled_banco.to_excel(writer, index=False, sheet_name=nombre_pestana)
 
                 # 8.2 Crear pestaña consolidada de Novedades y Alertas
-                df_novedades = df_final[df_final['Estado_Conciliacion'].str.contains('Validar|Sugerencia', na=False, case=False)].copy()
+                # Se incluyen todas las condiciones que sean Validar, Sugerencia o Revisar
+                df_novedades = df_final[df_final['Estado_Conciliacion'].str.contains('Validar|Sugerencia|Revisar', na=False, case=False)].copy()
                 if not df_novedades.empty:
                     df_novedades = df_novedades.sort_values(by=['Estado_Conciliacion', col_importe], ascending=[True, True])
                     styled_novedades = df_novedades.style.apply(resaltar_conciliados, axis=1)
@@ -201,7 +217,7 @@ if archivo_subido is not None:
             
             # Métricas
             conciliados_exactos = len(ind_r1) + len(ind_r2)
-            novedades_detectadas = len(ind_date) + len(ind_bank)
+            novedades_detectadas = len(ind_date) + len(ind_bank) + len(ind_val)
             pendientes = len(df_final) - (conciliados_exactos + novedades_detectadas)
 
             col1, col2, col3, col4 = st.columns(4)
