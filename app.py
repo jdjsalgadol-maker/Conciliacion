@@ -427,11 +427,11 @@ if archivo_subido is not None:
                 mismo_periodo = (f40.month == f50.month) and (f40.year == f50.year)
 
                 if dif <= tol_dias:
-                    estado_asignado = 'Alerta: Diferencia de Fecha (Mismo Periodo)' if mismo_periodo else 'Alerta: DIFERENTE PERIODO CONTABLE'
+                    estado_asignado = ' Diferencia de Fecha (Mismo Periodo)' if mismo_periodo else ' DIFERENTE PERIODO CONTABLE'
                     txt_estado = "mismo periodo" if mismo_periodo else "¡DIFERENTE MES/AÑO!"
                     com_txt = f"Misma referencia/banco/importe, pero difieren {dif} día(s) ({txt_estado})"
                 elif mismo_periodo:
-                    estado_asignado = 'Alerta: Diferencia de Fecha EXTENDIDA (Mismo Periodo)'
+                    estado_asignado = ' Diferencia de Fecha MAYOR 3 DIAS (Mismo Periodo)'
                     com_txt = f"Misma referencia/banco/importe, difiere {dif} días (supera tolerancia), pero es del mismo mes"
                 else:
                     continue 
@@ -451,7 +451,7 @@ if archivo_subido is not None:
             sB = sB.drop_duplicates('ID_Temp_40').drop_duplicates('ID_Temp_50')
 
             ind_B = set(sB['ID_Temp_40']) | set(sB['ID_Temp_50'])
-            set_estado(ind_B, 'Alerta: Reclasificación de banco')
+            set_estado(ind_B, ' Reclasificación de banco')
             com_B = {}
             for _, r in sB.iterrows():
                 com_B[r['ID_Temp_40']] = f"Misma referencia/importe/fecha, pero en banco distinto '{r[col_banco+'_50']}'. Doc: {int(r[col_doc+'_50'])}"
@@ -471,7 +471,7 @@ if archivo_subido is not None:
             sC = sC.sort_values('Dif_Valor').drop_duplicates('ID_Temp_40').drop_duplicates('ID_Temp_50')
 
             ind_C = set(sC['ID_Temp_40']) | set(sC['ID_Temp_50'])
-            set_estado(ind_C, 'Alerta: Diferencia de valor')
+            set_estado(ind_C, ' Diferencia de valor')
             com_C = {}
             for _, r in sC.iterrows():
                 com_C[r['ID_Temp_40']] = f"Misma referencia/banco/fecha, con diferencia de ${r['Dif_Valor']:,.0f} ({r['Dif_Pct']*100:.2f}%). Doc: {int(r[col_doc+'_50'])}"
