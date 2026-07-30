@@ -135,8 +135,9 @@ if archivo_subido is not None:
             df['Estado_Conciliacion'] = 'Pendiente'
             df['Comentario'] = ''
 
-            # --- NUEVO: 4B. CLASIFICACIÓN DE DISTRIBUIDORAS (CLAVE 40) ---
-            # Base de datos fija proporcionada
+            # =========================================================
+            # 4B. CLASIFICACIÓN DE DISTRIBUIDORAS (CLAVE 40)
+            # =========================================================
             mapeo_referencias_dist = {
                 "11760923": "Dist Acopi", "11761277": "Dist Acopi", "11761293": "Dist Acopi",
                 "11761327": "Dist Acopi", "11761301": "Dist Acopi", "12273934": "Dist Acopi",
@@ -162,24 +163,24 @@ if archivo_subido is not None:
 
             def clasificar_distribuidora(row):
                 ref_val = str(row.get(col_referencia, "")).strip()
-                # Limpiar el formato ".0" si excel lo exportó como float
                 ref_val = re.sub(r'\.0$', '', ref_val)
                 
-                # 1. Prioridad: Buscar en la base de datos de referencias
+                # 1. Buscar en la base de datos de referencias
                 if ref_val in mapeo_referencias_dist:
                     return mapeo_referencias_dist[ref_val]
                 
-                # 2. Prioridad: Buscar patrones en el Texto si la referencia no estaba
+                # 2. Buscar patrones en el Texto si la referencia no estaba
                 texto_val = row.get(col_texto, "")
                 if pd.notna(texto_val) and str(texto_val).strip() != "":
-                    texto_str = str(texto_val).upper()
+                    t = str(texto_val).upper()
                     
-                    if 'D502' in texto_str: return 'Dist Buga'
-                    if 'D503' in texto_str: return 'Dist Acopi'
-                    if 'D504' in texto_str: return 'Dist Dosquebradas'
-                    if 'D505' in texto_str: return 'Dist Pasto'
+                    if 'DOSQ' in t or 'D504' in t: return 'Dist Dosquebradas'
+                    if 'ACOPI' in t or 'D503' in t: return 'Dist Acopi'
+                    if 'PASTO' in t or 'D505' in t: return 'Dist Pasto'
+                    if 'BUGA' in t or 'D502' in t: return 'Dist Buga'
                     
-                    numeros = re.findall(r'\b\d{4}\b', texto_str)
+                    # 3. Buscar rangos numéricos de 4 dígitos
+                    numeros = re.findall(r'\b\d{4}\b', t)
                     for n in numeros:
                         num = int(n)
                         if 2000 <= num <= 2999: return 'Dist Buga'
@@ -189,12 +190,13 @@ if archivo_subido is not None:
                         
                 return 'Sin clasificar'
 
-            # Aplicar la lógica únicamente a la Clave 40
             df['Distribuidora'] = 'N/A'
             mask_40 = df[col_clave] == '40'
             df.loc[mask_40, 'Distribuidora'] = df.apply(lambda r: clasificar_distribuidora(r) if r[col_clave] == '40' else 'N/A', axis=1)
-            # -----------------------------------------------------------
 
+            # =========================================================
+            # FUNCIONES AUXILIARES
+            # =========================================================
             def set_estado(indices, estado):
                 df.loc[df['ID_Temp'].isin(indices), 'Estado_Conciliacion'] = estado
 
