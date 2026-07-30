@@ -15,7 +15,7 @@ hide_style = """
 st.markdown(hide_style, unsafe_allow_html=True)
 
 st.title("🏦 Conciliación General Multibanco 🤖")
-st.write("Sube tu archivo consolidado. El sistema leerá todas las pestañas automáticamente, completará la marcación de bancos, aplicará reglas de emparejamiento (FIFO) y formateará fechas y valores.")
+st.write("Sube tu archivo consolidado. El sistema leerá todas las pestañas automáticamente, completará la marcación de bancos, aplicará reglas de emparejamiento (FIFO) y formateará fechas. Los valores numéricos se exportan en formato Genérico.")
 
 archivo_subido = st.file_uploader("Selecciona el archivo de Excel o CSV", type=['xlsx', 'csv'])
 
@@ -93,8 +93,8 @@ if archivo_subido is not None:
             df[col_clave] = df[col_clave].astype(str).str.strip().str.replace('.0', '', regex=False)
             df[col_banco] = df[col_banco].astype(str).str.strip()
             
-            # Garantizar que el importe sea numérico para Excel y calcular el valor ABSOLUTO
-            df[col_importe] = pd.to_numeric(df[col_importe], errors='coerce').fillna(0).astype(float)
+            # Dejar el importe como número puro (Genérico) para que Excel decida visualmente según la región
+            df[col_importe] = pd.to_numeric(df[col_importe], errors='coerce').fillna(0)
             df['Abs_Importe'] = df[col_importe].abs() 
             
             df[col_fecha] = pd.to_datetime(df[col_fecha], errors='coerce').dt.date
@@ -121,10 +121,9 @@ if archivo_subido is not None:
             # --- 6. LIMPIEZA FINAL Y FORMATO DE FECHAS ---
             df_final = df.drop(columns=['ID_Temp', 'Abs_Importe', 'Turno'], errors='ignore')
 
-            # Identificar todas las columnas que representan fechas (Fe.contabilización, Fecha valor, etc.)
+            # Identificar todas las columnas que representan fechas y aplicar formato de fecha corta
             columnas_fecha = [c for c in df_final.columns if 'fe.' in c.lower() or 'fecha' in c.lower() or 'fe-' in c.lower()]
             for col_f in columnas_fecha:
-                # Convertir a formato de fecha corta (DD/MM/YYYY)
                 df_final[col_f] = pd.to_datetime(df_final[col_f], errors='coerce').dt.strftime('%d/%m/%Y')
 
             # --- FUNCION DE COLOR ---
@@ -143,7 +142,7 @@ if archivo_subido is not None:
                 for banco in bancos_unicos:
                     df_banco = df_final[df_final[col_banco] == banco].copy()
                     
-                    # ORDENAR DE MENOR A MAYOR POR EL IMPORTE (Columna I)
+                    # ORDENAR DE MENOR A MAYOR POR EL IMPORTE
                     df_banco = df_banco.sort_values(by=col_importe, ascending=True)
                     
                     nombre_pestana = str(banco)[:31].replace('/', '-').replace('\\', '-').replace(':', '').replace('?', '').replace('*', '').replace('[', '').replace(']', '')
