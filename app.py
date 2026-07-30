@@ -23,9 +23,8 @@ st.write(
     "Sube tu archivo consolidado. El sistema concilia de forma **conservadora**: "
     "solo marca como *Conciliado* lo que tiene evidencia inequívoca (referencia exacta, "
     "referencia limpia, cruce por sectorización de sede o cruce único sin ambigüedad). "
-    "Los colores utilizan una **escala monocromática (tonos azules)**: los cruces 100% exactos se marcan en "
-    "el azul más oscuro, y a medida que el riesgo aumenta (alertas o revisión manual), "
-    "el color se vuelve más claro para facilitar tu auditoría visual."
+    "Los colores utilizan una **paleta de tonos pastel suaves** amigables con la vista, "
+    "categorizados semánticamente para que puedas auditar el Excel rápidamente."
 )
 
 with st.expander("⚙️ Parámetros de tolerancia para sugerencias (alertas)"):
@@ -369,7 +368,6 @@ if archivo_subido is not None:
                 dif = int(r['Dif_Dias'])
                 mismo_periodo = (f40.month == f50.month) and (f40.year == f50.year)
                 
-                # REGLA 1: Diferencia dentro del límite del slider (Normalmente 1 a 3 días)
                 if dif <= tol_dias:
                     estado_asignado = 'Alerta: Diferencia de Fecha (Mismo Periodo)' if mismo_periodo else 'Alerta: DIFERENTE PERIODO CONTABLE'
                     txt_estado = "mismo periodo" if mismo_periodo else "¡DIFERENTE MES/AÑO!"
@@ -380,7 +378,6 @@ if archivo_subido is not None:
                     com_A[r['ID_Temp_40']] = f"{com_txt} Doc: {int(r[col_doc+'_50'])}"
                     com_A[r['ID_Temp_50']] = f"{com_txt} Doc: {int(r[col_doc+'_40'])}"
                     
-                # REGLA 2: Diferencia supera el límite del slider PERO están en el mismo periodo
                 elif dif > tol_dias and mismo_periodo:
                     estado_asignado = 'Alerta: Diferencia de Fecha EXTENDIDA (Mismo Periodo)'
                     com_txt = f"Coincide exacto, difiere {dif} días (supera tolerancia), pero es del mismo mes."
@@ -448,26 +445,26 @@ if archivo_subido is not None:
                 df_final[col_f] = pd.to_datetime(df_final[col_f], errors='coerce').dt.strftime('%d/%m/%Y')
 
             # =========================================================
-            # 12. PALETA MONOCROMÁTICA DE AZULES
+            # 12. NUEVA PALETA DE COLORES PASTEL SEMÁNTICA
             # =========================================================
             def resaltar_conciliados(row):
                 est = str(row['Estado_Conciliacion']).lower()
                 
-                # 1. Azul Oscuro (Máxima seguridad)
+                # 1. Verde Pastel Claro (Lo perfecto / Máxima seguridad)
                 if 'cruce exacto' in est or 'cruce por sectorización' in est:
-                    return ['background-color: #6BAED6; color: black'] * len(row)
-                # 2. Azul Medio-Oscuro (Seguro)
+                    return ['background-color: #E2EFDA; color: black'] * len(row)
+                # 2. Azul Pastel Claro (Cruce único / Muy seguro)
                 elif 'cruce unico' in est:
-                    return ['background-color: #9ECAE1; color: black'] * len(row)
-                # 3. Azul Medio (Empate/Fuerte)
+                    return ['background-color: #DDEBF7; color: black'] * len(row)
+                # 3. Amarillo Pastel Claro (Empate / Fuerte por FIFO)
                 elif 'fifo en grupo' in est:
-                    return ['background-color: #C6DBEF; color: black'] * len(row)
-                # 4. Azul Claro (Alertas: Valor, Fecha normal y Fecha extendida, Banco)
+                    return ['background-color: #FFF2CC; color: black'] * len(row)
+                # 4. Naranja/Melocotón Pastel (Todas las alertas que requieren atención)
                 elif 'alerta' in est:
-                    return ['background-color: #DEEBF7; color: black'] * len(row)
-                # 5. Azul Muy Claro / Casi blanco (Múltiples o Pendiente manual)
+                    return ['background-color: #FCE4D6; color: black'] * len(row)
+                # 5. Gris Muy Claro (Múltiples opciones o pendiente manual)
                 elif 'múltiples' in est or 'multiples' in est or 'pendiente' in est:
-                    return ['background-color: #F7FBFF; color: black'] * len(row)
+                    return ['background-color: #F2F2F2; color: black'] * len(row)
                 
                 return [''] * len(row)
 
