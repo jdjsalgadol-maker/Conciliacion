@@ -22,10 +22,10 @@ st.title("🏦 Conciliación Integral Multibanco 🤖")
 st.write(
     "Sube tu archivo consolidado. El sistema concilia de forma **conservadora**: "
     "solo marca como *Conciliado* lo que tiene evidencia inequívoca (referencia exacta, "
-    "referencia limpia, cruce por rango de sede o cruce único sin ambigüedad). "
-    "Los colores utilizan una **escala monocromática**: los cruces 100% exactos se marcan en "
-    "el color más oscuro, y a medida que el riesgo aumenta (alertas o revisión manual), "
-    "el color se vuelve más claro para facilitar la auditoría visual."
+    "referencia limpia, cruce por sectorización de sede o cruce único sin ambigüedad). "
+    "Los colores utilizan una **escala monocromática (tonos azules)**: los cruces 100% exactos se marcan en "
+    "el azul más oscuro, y a medida que el riesgo aumenta (alertas o revisión manual), "
+    "el color se vuelve más claro para facilitar tu auditoría visual."
 )
 
 with st.expander("⚙️ Parámetros de tolerancia para sugerencias (alertas)"):
@@ -127,26 +127,62 @@ if archivo_subido is not None:
             df['Comentario'] = ''
 
             # =========================================================
-            # NUEVO: EXTRACCIÓN GLOBAL DE RANGOS DE SEDE
+            # 4B. CLASIFICACIÓN DE DISTRIBUIDORAS INTEGRAL
             # =========================================================
-            def extraer_rango(texto):
-                if pd.isna(texto): return None
-                numeros = re.findall(r'\b\d{4}\b', str(texto))
+            mapeo_referencias_dist = {
+                "11760923": "Dist Acopi", "11761277": "Dist Acopi", "11761293": "Dist Acopi",
+                "11761327": "Dist Acopi", "11761301": "Dist Acopi", "12273934": "Dist Acopi",
+                "11761319": "Dist Acopi", "12273900": "Dist Acopi", "12273926": "Dist Acopi",
+                "14632012": "Dist Acopi", "15186547": "Dist Acopi", "13048756": "Dist Acopi",
+                "15186539": "Dist Acopi", "16219602": "Dist Acopi", "16591240": "Dist Acopi",
+                "16634586": "Dist Acopi", "14885164": "Dist Acopi", "19827765": "Dist Acopi",
+                "11761350": "Dist Buga", "12161154": "Dist Buga", "14294946": "Dist Buga",
+                "15926645": "Dist Buga", "17608589": "Dist Buga",
+                "11831583": "Dist Dosquebradas", "12161162": "Dist Dosquebradas",
+                "12161121": "Dist Dosquebradas", "12161139": "Dist Dosquebradas",
+                "12874475": "Dist Dosquebradas", "15190309": "Dist Dosquebradas",
+                "14468144": "Dist Dosquebradas", "12500773": "Dist Dosquebradas",
+                "14468151": "Dist Dosquebradas", "14651459": "Dist Dosquebradas",
+                "15444946": "Dist Dosquebradas", "16062176": "Dist Dosquebradas",
+                "20836698": "Dist Dosquebradas", "72806854": "Dist Dosquebradas",
+                "20719829": "Dist Dosquebradas",
+                "15536188": "Dist Pasto", "12637294": "Dist Pasto", "11844685": "Dist Pasto",
+                "20235651": "Dist Pasto", "15536170": "Dist Pasto", "17549197": "Dist Pasto",
+                "17608605": "Dist Pasto",
+                "17968405": "VENTA EN LINEA"
+            }
+
+            def clasificar_distribuidora(row):
+                ref_val = str(row.get(col_referencia, "")).strip()
+                ref_limpia = re.sub(r'\.0$', '', ref_val)
+                
+                # 1. Buscar en la base de datos de referencias
+                if ref_limpia in mapeo_referencias_dist:
+                    return mapeo_referencias_dist[ref_limpia]
+                
+                # 2. Buscar patrones combinando Texto, Asignación y Referencia
+                texto_val = str(row.get(col_texto, ""))
+                asig_val = str(row.get(col_asignacion, ""))
+                t_global = f"{ref_val} {texto_val} {asig_val}".upper()
+                
+                if 'DOSQ' in t_global or 'D504' in t_global: return 'Dist Dosquebradas'
+                if 'ACOPI' in t_global or 'D503' in t_global: return 'Dist Acopi'
+                if 'PASTO' in t_global or 'D505' in t_global: return 'Dist Pasto'
+                if 'BUGA' in t_global or 'D502' in t_global: return 'Dist Buga'
+                
+                # 3. Buscar rangos numéricos de 4 dígitos
+                numeros = re.findall(r'\b\d{4}\b', t_global)
                 for n in numeros:
                     num = int(n)
-                    if 2000 <= num <= 2999: return 'Buga (2000-2999)'
-                    if 3000 <= num <= 3999: return 'Acopi (3000-3999)'
-                    if 4000 <= num <= 4999: return 'Dosquebradas (4000-4999)'
-                    if 6000 <= num <= 6999: return 'Pasto (6000-6999)'
-                return None
+                    if 2000 <= num <= 2999: return 'Dist Buga'
+                    if 3000 <= num <= 3999: return 'Dist Acopi'
+                    if 4000 <= num <= 4999: return 'Dist Dosquebradas'
+                    if 6000 <= num <= 6999: return 'Dist Pasto'
+                        
+                return 'Sin clasificar'
 
-            df['Sede_Rango'] = None
-            if col_referencia in df.columns:
-                df['Sede_Rango'] = df['Sede_Rango'].combine_first(df[col_referencia].apply(extraer_rango))
-            if col_asignacion in df.columns:
-                df['Sede_Rango'] = df['Sede_Rango'].combine_first(df[col_asignacion].apply(extraer_rango))
-            if col_texto and col_texto in df.columns:
-                df['Sede_Rango'] = df['Sede_Rango'].combine_first(df[col_texto].apply(extraer_rango))
+            # Aplicamos la clasificación a TODAS las filas (40 y 50) para permitir cruces bidireccionales
+            df['Distribuidora'] = df.apply(clasificar_distribuidora, axis=1)
 
             # =========================================================
             # FUNCIONES AUXILIARES
@@ -217,25 +253,25 @@ if archivo_subido is not None:
             set_comentarios(comentarios_r1b)
 
             # =========================================================
-            # NUEVO NIVEL 1C — CRUCE POR RANGO DE SEDE
+            # NUEVO NIVEL 1C — CRUCE POR SECTORIZACIÓN / DISTRIBUIDORA
             # =========================================================
             df_p1c = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
-            df_p1c = df_p1c[df_p1c['Sede_Rango'].notna()]
+            df_p1c = df_p1c[df_p1c['Distribuidora'] != 'Sin clasificar']
             
             d40c = df_p1c[df_p1c[col_clave] == '40']
             d50c = df_p1c[df_p1c[col_clave] == '50']
             
-            d40c['Turno_c'] = d40c.groupby([col_banco, 'Abs_Importe', col_fecha, 'Sede_Rango']).cumcount()
-            d50c['Turno_c'] = d50c.groupby([col_banco, 'Abs_Importe', col_fecha, 'Sede_Rango']).cumcount()
+            d40c['Turno_c'] = d40c.groupby([col_banco, 'Abs_Importe', col_fecha, 'Distribuidora']).cumcount()
+            d50c['Turno_c'] = d50c.groupby([col_banco, 'Abs_Importe', col_fecha, 'Distribuidora']).cumcount()
             
-            c1c = pd.merge(d40c, d50c, on=[col_banco, 'Abs_Importe', col_fecha, 'Sede_Rango', 'Turno_c'], suffixes=('_40', '_50'))
+            c1c = pd.merge(d40c, d50c, on=[col_banco, 'Abs_Importe', col_fecha, 'Distribuidora', 'Turno_c'], suffixes=('_40', '_50'))
             
             ind_r1c = set(c1c['ID_Temp_40']) | set(c1c['ID_Temp_50'])
-            set_estado(ind_r1c, 'Conciliado - Cruce por Rango de Sede')
+            set_estado(ind_r1c, 'Conciliado - Cruce por Sectorización/Rango')
             
             comentarios_r1c = {}
             for _, r in c1c.iterrows():
-                com = f"Cruce resuelto por coincidencia de rango ({r['Sede_Rango']})"
+                com = f"Cruce resuelto por coincidencia de Sede/Rango ({r['Distribuidora']})"
                 comentarios_r1c[r['ID_Temp_40']] = f"{com} - Doc: {int(r[col_doc + '_50'])}"
                 comentarios_r1c[r['ID_Temp_50']] = f"{com} - Doc: {int(r[col_doc + '_40'])}"
             set_comentarios(comentarios_r1c)
@@ -265,7 +301,7 @@ if archivo_subido is not None:
                 comentarios_r2[r['ID_Temp_50']] = f"Cruce único con Doc. {int(r[col_doc + '_40'])} (sin ambigüedad)"
             set_comentarios(comentarios_r2)
 
-            # --- Grupos AMBIGUOS (más de un candidato posible) ---
+            # --- Grupos AMBIGUOS ---
             ambiguos40 = df_p40[(df_p40['n40'] > 1) & (~df_p40['ID_Temp'].isin(ind_r2))]
             ambiguos50 = df_p50[(df_p50['n50'] > 1) & (~df_p50['ID_Temp'].isin(ind_r2))]
 
@@ -322,7 +358,7 @@ if archivo_subido is not None:
             df_40n = df_validos[df_validos[col_clave] == '40'].copy()
             df_50n = df_validos[df_validos[col_clave] == '50'].copy()
 
-            # --- NUEVO 9A: Validar con error de fecha Y PERIODO CONTABLE ---
+            # --- 9A: Validar con error de fecha Y PERIODO CONTABLE ---
             sA = pd.merge(df_40n, df_50n, on=[col_banco, 'Abs_Importe', 'Ref_Limpia'], suffixes=('_40', '_50'))
             sA['Dif_Dias'] = (sA['Fecha_Calc_40'] - sA['Fecha_Calc_50']).dt.days.abs()
             sA = sA[(sA['Dif_Dias'] > 0) & (sA['Dif_Dias'] <= tol_dias)]
@@ -333,7 +369,6 @@ if archivo_subido is not None:
             com_A = {}
             for _, r in sA.iterrows():
                 f40, f50 = r['Fecha_Calc_40'], r['Fecha_Calc_50']
-                # Evaluar si pertenecen al mismo periodo contable
                 mismo_periodo = (f40.month == f50.month) and (f40.year == f50.year)
                 estado_asignado = 'Alerta: Diferencia de Fecha (Mismo Periodo)' if mismo_periodo else 'Alerta: DIFERENTE PERIODO CONTABLE'
                 
@@ -381,7 +416,7 @@ if archivo_subido is not None:
                 com_C[r['ID_Temp_50']] = f"Diferencia de ${r['Dif_Valor']:,.0f} ({r['Dif_Pct']*100:.2f}%). Doc: {int(r[col_doc+'_40'])}"
             set_comentarios(com_C)
 
-            # --- Lo que sigue pendiente sin ninguna pista ---
+            # --- Lo pendiente ---
             sin_pista = df['Estado_Conciliacion'] == 'Pendiente'
             df.loc[sin_pista & (df['Comentario'] == ''), 'Comentario'] = 'Sin coincidencia encontrada - requiere revisión manual'
 
@@ -395,7 +430,7 @@ if archivo_subido is not None:
             # =========================================================
             # 11. LIMPIEZA FINAL Y FORMATO
             # =========================================================
-            df_final = df.drop(columns=['ID_Temp', 'Abs_Importe', 'Fecha_Calc', 'Sede_Rango'], errors='ignore')
+            df_final = df.drop(columns=['ID_Temp', 'Abs_Importe', 'Fecha_Calc', 'Distribuidora'], errors='ignore')
             columnas_fecha = [c for c in df_final.columns if 'fe.' in c.lower() or 'fecha' in c.lower() or 'fe-' in c.lower()]
             for col_f in columnas_fecha:
                 df_final[col_f] = pd.to_datetime(df_final[col_f], errors='coerce').dt.strftime('%d/%m/%Y')
@@ -407,7 +442,7 @@ if archivo_subido is not None:
                 est = str(row['Estado_Conciliacion']).lower()
                 
                 # 1. Azul Oscuro (Máxima seguridad)
-                if 'cruce exacto' in est or 'cruce por rango' in est:
+                if 'cruce exacto' in est or 'cruce por sectorización' in est:
                     return ['background-color: #6BAED6; color: black'] * len(row)
                 # 2. Azul Medio-Oscuro (Seguro)
                 elif 'cruce unico' in est:
@@ -460,7 +495,7 @@ if archivo_subido is not None:
             # =========================================================
             # 13. INTERFAZ Y DESCARGA
             # =========================================================
-            st.success("¡Conciliación Integral terminada! Se han aplicado cruces por rango y validaciones de periodo contable.")
+            st.success("¡Conciliación Integral terminada! Se han aplicado cruces por sectorización y validaciones de periodo contable.")
 
             if not cuadre_ok:
                 st.warning("⚠️ Alerta de integridad: el total de filas de salida no coincide con el de entrada. Revisa la pestaña DESCARTADAS.")
@@ -473,7 +508,7 @@ if archivo_subido is not None:
 
             col1, col2, col3, col4, col5, col6 = st.columns(6)
             col1.metric("Bancos procesados", len(bancos_unicos))
-            col2.metric("Conciliado exacto/rango", conciliados_exactos)
+            col2.metric("Conciliado exacto/sede", conciliados_exactos)
             col3.metric("Conciliado único", conciliados_unicos)
             col4.metric("Fuerte (val. redondo)", fifo_grupo)
             col5.metric("Alertas (revisar)", alertas)
