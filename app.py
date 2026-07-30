@@ -15,13 +15,13 @@ hide_style = """
 st.markdown(hide_style, unsafe_allow_html=True)
 
 st.title("🏦 Conciliación General Multibanco 🤖")
-st.write("Sube tu archivo consolidado. El sistema leerá todas las pestañas automáticamente, completará la marcación de bancos, aplicará reglas de emparejamiento (FIFO) y formateará fechas. Los valores numéricos se exportan en formato Genérico.")
+st.write("Sube tu archivo consolidado. El sistema aplicará emparejamiento exacto y luego un análisis integral de alertas (fechas desfasadas y reclasificaciones de banco) en una pestaña consolidada.")
 
 archivo_subido = st.file_uploader("Selecciona el archivo de Excel o CSV", type=['xlsx', 'csv'])
 
 if archivo_subido is not None:
     try:
-        with st.spinner("Leyendo archivo y unificando datos..."):
+        with st.spinner("Leyendo archivo, unificando datos y analizando alertas..."):
             
             # --- 1. LECTURA DINÁMICA A PRUEBA DE PESTAÑAS ---
             if archivo_subido.name.lower().endswith('.csv'):
@@ -93,14 +93,16 @@ if archivo_subido is not None:
             df[col_clave] = df[col_clave].astype(str).str.strip().str.replace('.0', '', regex=False)
             df[col_banco] = df[col_banco].astype(str).str.strip()
             
-            # Dejar el importe como número puro (Genérico) para que Excel decida visualmente según la región
+            # Dejar el importe como número puro (Genérico)
             df[col_importe] = pd.to_numeric(df[col_importe], errors='coerce').fillna(0)
             df['Abs_Importe'] = df[col_importe].abs() 
             
-            df[col_fecha] = pd.to_datetime(df[col_fecha], errors='coerce').dt.date
+            # Guardamos la fecha original para cálculos de días
+            df['Fecha_Calc'] = pd.to_datetime(df[col_fecha], errors='coerce')
+            df[col_fecha] = df['Fecha_Calc'].dt.date
             df['Estado_Conciliacion'] = 'Pendiente'
 
-            # --- 5. LÓGICA DE CASCADA VECTORIZADA ---
+            # --- 5. LÓGICA DE CASCADA VECTORIZADA (EXACTA) ---
             df_40 = df[df[col_clave] == '40']
             df_50 = df[df[col_clave] == '50']
             
@@ -118,31 +120,66 @@ if archivo_subido is not None:
             ind_r2 = set(c_n['ID_Temp_4']).union(set(c_n['ID_Temp_5']))
             df.loc[df['ID_Temp'].isin(ind_r2), 'Estado_Conciliacion'] = 'Conciliado Parte 2'
 
-            # --- 6. LIMPIEZA FINAL Y FORMATO DE FECHAS ---
-            df_final = df.drop(columns=['ID_Temp', 'Abs_Importe', 'Turno'], errors='ignore')
+            # --- 6. ANÁLISIS INTEGRAL (NOVEDADES Y ALERTAS) ---
+            df_pendientes = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
+            
+            # Limpiamos referencias para evitar cruces falsos con celdas vacías
+            df_pendientes['Ref_Limpia'] = df_pendientes[col_referencia].astype(str).str.strip().str.lower()
+            df_validos = df_pendientes[~df_pendientes['Ref_Limpia'].isin(['nan', '', 'none', '0', '/'])].copy()
+            
+            df_40_nov = df_validos[df_validos[col_clave] == '40']
+            df_50_nov = df_validos[df_validos[col_clave] == '50']
 
-            # Identificar todas las columnas que representan fechas y aplicar formato de fecha corta
+            # Alerta A: Validar con error de fecha (diferencia de 1 a 3 días, mismo banco e importe)
+            s_date = pd.merge(df_40_nov, df_50_nov, on=[col_banco, 'Abs_Importe', 'Ref_Limpia'], suffixes=('_40', '_50'))
+            s_date['Dif_Dias'] = (s_date['Fecha_Calc_40'] - s_date['Fecha_Calc_50']).dt.days.abs()
+            s_date = s_date[(s_date['Dif_Dias'] > 0) & (s_date['Dif_Dias'] <= 3)]
+            s_date = s_date.drop_duplicates(subset=['ID_Temp_40']).drop_duplicates(subset=['ID_Temp_50'])
+            
+            ind_date = set(s_date['ID_Temp_40']).union(set(s_date['ID_Temp_50']))
+            df.loc[df['ID_Temp'].isin(ind_date), 'Estado_Conciliacion'] = 'Validar con error de fecha'
+
+            # Actualizamos excluyendo los que ya marcamos para la siguiente regla
+            df_40_nov = df_40_nov[~df_40_nov['ID_Temp'].isin(ind_date)]
+            df_50_nov = df_50_nov[~df_50_nov['ID_Temp'].isin(ind_date)]
+
+            # Alerta B: Sugerencia: Reclasificación de banco (mismo importe, fecha y ref, pero distinto banco)
+            s_bank = pd.merge(df_40_nov, df_50_nov, on=['Abs_Importe', col_fecha, 'Ref_Limpia'], suffixes=('_40', '_50'))
+            s_bank = s_bank[s_bank[f'{col_banco}_40'] != s_bank[f'{col_banco}_50']]
+            s_bank = s_bank.drop_duplicates(subset=['ID_Temp_40']).drop_duplicates(subset=['ID_Temp_50'])
+            
+            ind_bank = set(s_bank['ID_Temp_40']).union(set(s_bank['ID_Temp_50']))
+            df.loc[df['ID_Temp'].isin(ind_bank), 'Estado_Conciliacion'] = 'Sugerencia: Reclasificación de banco'
+
+            # --- 7. LIMPIEZA FINAL Y FORMATO DE FECHAS ---
+            df_final = df.drop(columns=['ID_Temp', 'Abs_Importe', 'Turno', 'Fecha_Calc', 'Ref_Limpia'], errors='ignore')
+
+            # Aplicar formato de fecha corta (DD/MM/YYYY)
             columnas_fecha = [c for c in df_final.columns if 'fe.' in c.lower() or 'fecha' in c.lower() or 'fe-' in c.lower()]
             for col_f in columnas_fecha:
                 df_final[col_f] = pd.to_datetime(df_final[col_f], errors='coerce').dt.strftime('%d/%m/%Y')
 
-            # --- FUNCION DE COLOR ---
+            # --- FUNCION DE COLORES ---
             def resaltar_conciliados(row):
-                if 'Conciliado Parte 1' in str(row['Estado_Conciliacion']):
-                    return ['background-color: #D4EFDF'] * len(row) 
-                elif 'Conciliado Parte 2' in str(row['Estado_Conciliacion']):
-                    return ['background-color: #D6EAF8'] * len(row) 
+                est = str(row['Estado_Conciliacion'])
+                if 'Conciliado Parte 1' in est:
+                    return ['background-color: #D4EFDF'] * len(row) # Verde Claro
+                elif 'Conciliado Parte 2' in est:
+                    return ['background-color: #D6EAF8'] * len(row) # Azul Claro
+                elif 'error de fecha' in est.lower():
+                    return ['background-color: #FCF3CF'] * len(row) # Amarillo (Alerta Fecha)
+                elif 'reclasificación' in est.lower():
+                    return ['background-color: #F5B7B1'] * len(row) # Rojo Claro (Alerta Banco)
                 return [''] * len(row)
 
-            # --- 7. EXPORTACIÓN DIVIDIDA POR BANCO ---
+            # --- 8. EXPORTACIÓN DIVIDIDA POR BANCO + PESTAÑA NOVEDADES ---
             output = io.BytesIO()
             bancos_unicos = df_final[col_banco].unique()
             
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                # 8.1 Exportar Bancos individualmente
                 for banco in bancos_unicos:
                     df_banco = df_final[df_final[col_banco] == banco].copy()
-                    
-                    # ORDENAR DE MENOR A MAYOR POR EL IMPORTE
                     df_banco = df_banco.sort_values(by=col_importe, ascending=True)
                     
                     nombre_pestana = str(banco)[:31].replace('/', '-').replace('\\', '-').replace(':', '').replace('?', '').replace('*', '').replace('[', '').replace(']', '')
@@ -152,18 +189,31 @@ if archivo_subido is not None:
                     styled_banco = df_banco.style.apply(resaltar_conciliados, axis=1)
                     styled_banco.to_excel(writer, index=False, sheet_name=nombre_pestana)
 
-            # --- 8. INTERFAZ Y DESCARGA ---
-            st.success("¡Conciliación Multibanco terminada exitosamente!")
+                # 8.2 Crear pestaña consolidada de Novedades y Alertas
+                df_novedades = df_final[df_final['Estado_Conciliacion'].str.contains('Validar|Sugerencia', na=False, case=False)].copy()
+                if not df_novedades.empty:
+                    df_novedades = df_novedades.sort_values(by=['Estado_Conciliacion', col_importe], ascending=[True, True])
+                    styled_novedades = df_novedades.style.apply(resaltar_conciliados, axis=1)
+                    styled_novedades.to_excel(writer, index=False, sheet_name='NOVEDADES_Y_ALERTAS')
+
+            # --- 9. INTERFAZ Y DESCARGA ---
+            st.success("¡Conciliación Multibanco y Análisis Integral terminados!")
             
-            col1, col2, col3 = st.columns(3)
+            # Métricas
+            conciliados_exactos = len(ind_r1) + len(ind_r2)
+            novedades_detectadas = len(ind_date) + len(ind_bank)
+            pendientes = len(df_final) - (conciliados_exactos + novedades_detectadas)
+
+            col1, col2, col3, col4 = st.columns(4)
             col1.metric("Bancos Procesados", len(bancos_unicos))
-            col2.metric("Registros Conciliados", len(ind_r1) + len(ind_r2))
-            col3.metric("Aún Pendientes", len(df_final) - (len(ind_r1) + len(ind_r2)))
+            col2.metric("Conciliados Exactos", conciliados_exactos)
+            col3.metric("Novedades (Alertas)", novedades_detectadas)
+            col4.metric("Aún Pendientes", pendientes)
 
             st.download_button(
                 label="📥 Descargar Excel con Resultados",
                 data=output.getvalue(),
-                file_name="Conciliacion_Automatizada_Resultados.xlsx",
+                file_name="Conciliacion_Automatizada_Integral.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 
