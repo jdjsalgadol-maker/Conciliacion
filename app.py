@@ -29,7 +29,7 @@ st.write(
 )
 
 with st.expander("⚙️ Parámetros de tolerancia para sugerencias (alertas)"):
-    tol_dias = st.slider("Días máximos de diferencia para alertar 'error de fecha'", 1, 10, 3)
+    tol_dias = st.slider("Días máximos de diferencia regular para alertar 'error de fecha'", 1, 15, 3)
     tol_valor_abs = st.number_input("Diferencia absoluta máxima de valor para alertar ($)", min_value=1, value=5000, step=100)
     tol_valor_pct = st.number_input("Diferencia relativa máxima de valor para alertar (%)", min_value=0.01, value=0.5, step=0.01) / 100
     multiplo_redondo = st.selectbox("Múltiplo para considerar un valor 'redondo' (alta ambigüedad)", [50000, 100000], index=1)
@@ -181,7 +181,6 @@ if archivo_subido is not None:
                         
                 return 'Sin clasificar'
 
-            # Aplicamos la clasificación a TODAS las filas para permitir cruces
             df['Distribuidora'] = df.apply(clasificar_distribuidora, axis=1)
 
             # =========================================================
@@ -358,26 +357,39 @@ if archivo_subido is not None:
             df_40n = df_validos[df_validos[col_clave] == '40'].copy()
             df_50n = df_validos[df_validos[col_clave] == '50'].copy()
 
-            # --- 9A: Validar con error de fecha Y PERIODO CONTABLE ---
+            # --- 9A: Validar con error de fecha (REGLA AMPLIADA PARA MISMO PERIODO) ---
             sA = pd.merge(df_40n, df_50n, on=[col_banco, 'Abs_Importe', 'Ref_Limpia'], suffixes=('_40', '_50'))
             sA['Dif_Dias'] = (sA['Fecha_Calc_40'] - sA['Fecha_Calc_50']).dt.days.abs()
-            sA = sA[(sA['Dif_Dias'] > 0) & (sA['Dif_Dias'] <= tol_dias)]
-            sA = sA.drop_duplicates('ID_Temp_40').drop_duplicates('ID_Temp_50')
+            sA = sA[sA['Dif_Dias'] > 0].sort_values('Dif_Dias').drop_duplicates('ID_Temp_40').drop_duplicates('ID_Temp_50')
 
-            ind_A = set(sA['ID_Temp_40']) | set(sA['ID_Temp_50'])
-            
+            ind_A = set()
             com_A = {}
             for _, r in sA.iterrows():
                 f40, f50 = r['Fecha_Calc_40'], r['Fecha_Calc_50']
+                dif = int(r['Dif_Dias'])
                 mismo_periodo = (f40.month == f50.month) and (f40.year == f50.year)
-                estado_asignado = 'Alerta: Diferencia de Fecha (Mismo Periodo)' if mismo_periodo else 'Alerta: DIFERENTE PERIODO CONTABLE'
                 
-                df.loc[df['ID_Temp'] == r['ID_Temp_40'], 'Estado_Conciliacion'] = estado_asignado
-                df.loc[df['ID_Temp'] == r['ID_Temp_50'], 'Estado_Conciliacion'] = estado_asignado
-                
-                txt_estado = "mismo periodo" if mismo_periodo else "¡DIFERENTE MES/AÑO!"
-                com_A[r['ID_Temp_40']] = f"Coincide exacto, pero difieren {int(r['Dif_Dias'])} día(s) ({txt_estado}). Doc: {int(r[col_doc+'_50'])}"
-                com_A[r['ID_Temp_50']] = f"Coincide exacto, pero difieren {int(r['Dif_Dias'])} día(s) ({txt_estado}). Doc: {int(r[col_doc+'_40'])}"
+                # REGLA 1: Diferencia dentro del límite del slider (Normalmente 1 a 3 días)
+                if dif <= tol_dias:
+                    estado_asignado = 'Alerta: Diferencia de Fecha (Mismo Periodo)' if mismo_periodo else 'Alerta: DIFERENTE PERIODO CONTABLE'
+                    txt_estado = "mismo periodo" if mismo_periodo else "¡DIFERENTE MES/AÑO!"
+                    com_txt = f"Coincide exacto, pero difieren {dif} día(s) ({txt_estado})."
+                    
+                    ind_A.update([r['ID_Temp_40'], r['ID_Temp_50']])
+                    df.loc[df['ID_Temp'].isin([r['ID_Temp_40'], r['ID_Temp_50']]), 'Estado_Conciliacion'] = estado_asignado
+                    com_A[r['ID_Temp_40']] = f"{com_txt} Doc: {int(r[col_doc+'_50'])}"
+                    com_A[r['ID_Temp_50']] = f"{com_txt} Doc: {int(r[col_doc+'_40'])}"
+                    
+                # REGLA 2: Diferencia supera el límite del slider PERO están en el mismo periodo
+                elif dif > tol_dias and mismo_periodo:
+                    estado_asignado = 'Alerta: Diferencia de Fecha EXTENDIDA (Mismo Periodo)'
+                    com_txt = f"Coincide exacto, difiere {dif} días (supera tolerancia), pero es del mismo mes."
+                    
+                    ind_A.update([r['ID_Temp_40'], r['ID_Temp_50']])
+                    df.loc[df['ID_Temp'].isin([r['ID_Temp_40'], r['ID_Temp_50']]), 'Estado_Conciliacion'] = estado_asignado
+                    com_A[r['ID_Temp_40']] = f"{com_txt} Doc: {int(r[col_doc+'_50'])}"
+                    com_A[r['ID_Temp_50']] = f"{com_txt} Doc: {int(r[col_doc+'_40'])}"
+
             set_comentarios(com_A)
 
             df_40n = df_40n[~df_40n['ID_Temp'].isin(ind_A)]
@@ -430,14 +442,13 @@ if archivo_subido is not None:
             # =========================================================
             # 11. LIMPIEZA FINAL Y FORMATO
             # =========================================================
-            # AQUÍ ESTABA EL ERROR: Quité 'Distribuidora' de la función .drop() para que la deje viva en tu Excel
             df_final = df.drop(columns=['ID_Temp', 'Abs_Importe', 'Fecha_Calc'], errors='ignore')
             columnas_fecha = [c for c in df_final.columns if 'fe.' in c.lower() or 'fecha' in c.lower() or 'fe-' in c.lower()]
             for col_f in columnas_fecha:
                 df_final[col_f] = pd.to_datetime(df_final[col_f], errors='coerce').dt.strftime('%d/%m/%Y')
 
             # =========================================================
-            # NUEVO: PALETA MONOCROMÁTICA DE AZULES
+            # 12. PALETA MONOCROMÁTICA DE AZULES
             # =========================================================
             def resaltar_conciliados(row):
                 est = str(row['Estado_Conciliacion']).lower()
@@ -451,7 +462,7 @@ if archivo_subido is not None:
                 # 3. Azul Medio (Empate/Fuerte)
                 elif 'fifo en grupo' in est:
                     return ['background-color: #C6DBEF; color: black'] * len(row)
-                # 4. Azul Claro (Alertas: Valor, Fecha, Banco)
+                # 4. Azul Claro (Alertas: Valor, Fecha normal y Fecha extendida, Banco)
                 elif 'alerta' in est:
                     return ['background-color: #DEEBF7; color: black'] * len(row)
                 # 5. Azul Muy Claro / Casi blanco (Múltiples o Pendiente manual)
@@ -461,7 +472,7 @@ if archivo_subido is not None:
                 return [''] * len(row)
 
             # =========================================================
-            # 12. EXPORTACIÓN
+            # 13. EXPORTACIÓN
             # =========================================================
             output = io.BytesIO()
             bancos_unicos = [b for b in df_final[col_banco].unique() if str(b).strip().lower() not in ('', 'nan')]
@@ -494,7 +505,7 @@ if archivo_subido is not None:
                     filas_descartadas.to_excel(writer, index=False, sheet_name='DESCARTADAS_SIN_DOC_O_CT')
 
             # =========================================================
-            # 13. INTERFAZ Y DESCARGA
+            # 14. INTERFAZ Y DESCARGA
             # =========================================================
             st.success("¡Conciliación Integral terminada! Se han aplicado cruces por sectorización y validaciones de periodo contable.")
 
