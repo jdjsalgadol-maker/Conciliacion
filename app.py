@@ -15,32 +15,39 @@ hide_style = """
 st.markdown(hide_style, unsafe_allow_html=True)
 
 st.title("🏦 Conciliación General Multibanco 🤖")
-st.write("Sube tu archivo consolidado. El sistema completará la marcación de bancos, aplicará reglas de emparejamiento exacto y flexible (FIFO) separando automáticamente por banco.")
+st.write("Sube tu archivo consolidado. El sistema leerá todas las pestañas automáticamente, completará la marcación de bancos y aplicará reglas de emparejamiento (FIFO).")
 
 archivo_subido = st.file_uploader("Selecciona el archivo de Excel o CSV", type=['xlsx', 'csv'])
 
 if archivo_subido is not None:
     try:
-        with st.spinner("Procesando transacciones y aplicando reglas de depuración..."):
+        with st.spinner("Leyendo archivo y unificando datos..."):
             
-            # --- 1. LECTURA DINÁMICA ---
+            # --- 1. LECTURA DINÁMICA A PRUEBA DE PESTAÑAS ---
             if archivo_subido.name.lower().endswith('.csv'):
                 df = pd.read_csv(archivo_subido)
             else:
-                df = pd.read_excel(archivo_subido)
+                # sheet_name=None lee TODAS las pestañas como un diccionario.
+                # Luego pd.concat las une todas en un solo DataFrame sin importar cómo se llamen.
+                diccionario_hojas = pd.read_excel(archivo_subido, sheet_name=None)
+                df = pd.concat(diccionario_hojas.values(), ignore_index=True)
             
             # Limpiar nombres de columnas para evitar fallos por espacios invisibles
             df.columns = df.columns.str.strip()
             
-            # --- 2. MAPEO SEGURO DE COLUMNAS ---
-            # Se valida si viene con tilde o sin tilde según el archivo original
+            # --- 2. MAPEO SEGURO Y DINÁMICO DE COLUMNAS ---
             col_asignacion = 'Asignación' if 'Asignación' in df.columns else 'Asignaión' 
             col_referencia = 'Referencia'
-            col_clave = 'CT'
-            col_fecha = 'Fe-valor'
-            col_importe = 'Importe en ML'
+            col_clave = 'Clave contabiliz.' if 'Clave contabiliz.' in df.columns else 'CT'
+            col_fecha = 'Fecha valor' if 'Fecha valor' in df.columns else 'Fe-valor'
+            col_importe = 'Importe en moneda local' if 'Importe en moneda local' in df.columns else 'Importe en ML'
             col_banco = 'Clave referencia 3'
-            col_doc = 'Nº doc.'
+            col_doc = 'Nº documento' if 'Nº documento' in df.columns else 'Nº doc.'
+
+            # Si después de leer las hojas no existe la columna documento, detenemos para no arrojar errores raros
+            if col_doc not in df.columns:
+                st.error(f"No se encontró la columna de documento ({col_doc}) en ninguna de las pestañas.")
+                st.stop()
 
             # --- 3. AUTOCOMPLETADO DE BANCOS POR CUENTA DE MAYOR ---
             mapeo_cuentas_banco = {
@@ -63,14 +70,12 @@ if archivo_subido is not None:
                 asig_val = str(row.get(col_asignacion, ""))
                 banco_val = row.get(col_banco, None)
 
-                # Si es fila de Cuenta de mayor, actualizamos la variable retenida
                 if "Cuenta de mayor" in asig_val:
                     for cuenta, banco in mapeo_cuentas_banco.items():
                         if cuenta in asig_val:
                             current_bank = banco
                             break
 
-                # Si la columna clave referencia 3 tiene un banco, lo tomamos. Si no, usamos el retenido
                 if pd.notnull(banco_val) and str(banco_val).strip() != "" and str(banco_val).strip().lower() != "nan":
                     current_bank = str(banco_val).strip()
                     bancos_completados.append(current_bank)
@@ -80,20 +85,21 @@ if archivo_subido is not None:
             df[col_banco] = bancos_completados
 
             # Eliminar las filas de subtotales (Cuenta de mayor)
-            df = df[~df[col_asignacion].astype(str).str.contains("Cuenta de mayor", case=False, na=False)].copy()
+            if col_asignacion in df.columns:
+                df = df[~df[col_asignacion].astype(str).str.contains("Cuenta de mayor", case=False, na=False)].copy()
 
             # --- 4. LIMPIEZA Y ORDENAMIENTO (FIFO) ---
-            # Asegurar que el documento sea numérico para un ordenamiento perfecto
             df[col_doc] = pd.to_numeric(df[col_doc], errors='coerce')
             
-            # ORDENAMIENTO CRÍTICO: De más antiguo a más reciente para priorizar el cruce
+            # Limpiar filas basura que hayan quedado al unir pestañas (ej. filas vacías)
+            df = df.dropna(subset=[col_doc, col_clave]).reset_index(drop=True)
+            
             df = df.sort_values(by=[col_doc], ascending=True).reset_index(drop=True)
             
             df['ID_Temp'] = df.index
             df[col_clave] = df[col_clave].astype(str).str.strip().str.replace('.0', '', regex=False)
             df[col_banco] = df[col_banco].astype(str).str.strip()
             
-            # Convertir importes y calcular el valor ABSOLUTO
             df[col_importe] = pd.to_numeric(df[col_importe], errors='coerce').fillna(0).round(2)
             df['Abs_Importe'] = df[col_importe].abs() 
             
@@ -104,19 +110,16 @@ if archivo_subido is not None:
             df_40 = df[df[col_clave] == '40']
             df_50 = df[df[col_clave] == '50']
             
-            # Regla 1A: Referencia vs Referencia (Con Importe Absoluto)
             c1 = pd.merge(df_40, df_50, 
                           left_on=[col_banco, 'Abs_Importe', col_fecha, col_referencia], 
                           right_on=[col_banco, 'Abs_Importe', col_fecha, col_referencia], 
                           suffixes=('_40', '_50'))
             
-            # Regla 1B: Asignación vs Referencia
             c2 = pd.merge(df_40, df_50, 
                           left_on=[col_banco, 'Abs_Importe', col_fecha, col_asignacion], 
                           right_on=[col_banco, 'Abs_Importe', col_fecha, col_referencia], 
                           suffixes=('_40', '_50'))
             
-            # Regla 1C: Referencia vs Asignación
             c3 = pd.merge(df_40, df_50, 
                           left_on=[col_banco, 'Abs_Importe', col_fecha, col_referencia], 
                           right_on=[col_banco, 'Abs_Importe', col_fecha, col_asignacion], 
@@ -128,10 +131,7 @@ if archivo_subido is not None:
                      
             df.loc[df['ID_Temp'].isin(ind_r1), 'Estado_Conciliacion'] = 'Conciliado Parte 1'
 
-            # Regla 2: Cruce Flexible con Prioridad FIFO estricta
             df_p = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
-            
-            # El "Turno" agrupa los valores repetidos respetando el ordenamiento del Nº doc. previo
             df_p['Turno'] = df_p.groupby([col_banco, 'Abs_Importe', col_fecha, col_clave]).cumcount()
             
             c_n = pd.merge(df_p[df_p[col_clave]=='40'], df_p[df_p[col_clave]=='50'], 
@@ -147,9 +147,9 @@ if archivo_subido is not None:
             # --- FUNCION DE COLOR ---
             def resaltar_conciliados(row):
                 if 'Conciliado Parte 1' in str(row['Estado_Conciliacion']):
-                    return ['background-color: #D4EFDF'] * len(row) # Verde claro
+                    return ['background-color: #D4EFDF'] * len(row) 
                 elif 'Conciliado Parte 2' in str(row['Estado_Conciliacion']):
-                    return ['background-color: #D6EAF8'] * len(row) # Azul claro
+                    return ['background-color: #D6EAF8'] * len(row) 
                 return [''] * len(row)
 
             # --- 7. EXPORTACIÓN DIVIDIDA POR BANCO ---
@@ -160,7 +160,6 @@ if archivo_subido is not None:
                 for banco in bancos_unicos:
                     df_banco = df_final[df_final[col_banco] == banco]
                     
-                    # Limpiar caracteres especiales para que Excel no marque error en la pestaña
                     nombre_pestana = str(banco)[:31].replace('/', '-').replace('\\', '-').replace(':', '').replace('?', '').replace('*', '').replace('[', '').replace(']', '')
                     if not nombre_pestana.strip() or nombre_pestana.lower() == 'nan':
                         nombre_pestana = "Sin_Banco_Asignado"
@@ -184,4 +183,4 @@ if archivo_subido is not None:
             )
 
     except Exception as e:
-        st.error(f"Error técnico detectado. Asegúrate de que las columnas de tu archivo coinciden exactamente con la estructura esperada. Detalle técnico: {e}")
+        st.error(f"Error técnico detectado. Detalle técnico: {e}")
