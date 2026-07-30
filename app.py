@@ -4,7 +4,9 @@ import numpy as np
 import io
 import re
 
-# --- CONFIGURACIÓN DE LA PÁGINA ---
+# ============================================================
+# CONFIGURACIÓN DE LA PÁGINA
+# ============================================================
 st.set_page_config(page_title="Conciliación Integral @JuanS", layout="wide")
 
 hide_style = """
@@ -19,16 +21,20 @@ st.markdown(hide_style, unsafe_allow_html=True)
 st.title("🏦 Conciliación Integral Multibanco 🤖")
 st.write(
     "Sube tu archivo consolidado. El sistema concilia de forma **conservadora**: "
-    "solo marca como *Conciliado* lo que tiene evidencia inequívoca (referencia exacta, o cruce "
-    "único sin ambigüedad). Todo lo demás queda resaltado con color y una **sugerencia textual** "
-    "para tu revisión manual, en lugar de arriesgarse a un cruce incorrecto."
+    "solo marca como *Conciliado* lo que tiene evidencia inequívoca (referencia exacta, "
+    "referencia con prefijos como 'E'/'NEQUI' limpiados, o cruce único sin ambigüedad). "
+    "Los valores redondos (múltiplos de $50.000 / $100.000, típicos de Bancolombia) que "
+    "generan múltiples candidatos idénticos se tratan con una regla especial de desempate "
+    "por grupo cerrado (FIFO), y todo lo que siga sin evidencia suficiente queda resaltado "
+    "con color y una **sugerencia textual** clara para tu revisión manual, sin arriesgar "
+    "un cruce contable incorrecto."
 )
 
-# --- PARÁMETROS AJUSTABLES ---
 with st.expander("⚙️ Parámetros de tolerancia para sugerencias (alertas)"):
     tol_dias = st.slider("Días máximos de diferencia para alertar 'error de fecha'", 1, 10, 3)
     tol_valor_abs = st.number_input("Diferencia absoluta máxima de valor para alertar ($)", min_value=1, value=5000, step=100)
     tol_valor_pct = st.number_input("Diferencia relativa máxima de valor para alertar (%)", min_value=0.01, value=0.5, step=0.01) / 100
+    multiplo_redondo = st.selectbox("Múltiplo para considerar un valor 'redondo' (alta ambigüedad)", [50000, 100000], index=1)
 
 archivo_subido = st.file_uploader("Selecciona el archivo de Excel o CSV", type=['xlsx', 'csv'])
 
@@ -48,7 +54,7 @@ if archivo_subido is not None:
             df.columns = df.columns.str.strip()
 
             # =========================================================
-            # 2. MAPEO SEGURO Y DINÁMICO DE COLUMNAS (acepta 2 nomenclaturas)
+            # 2. MAPEO SEGURO Y DINÁMICO DE COLUMNAS
             # =========================================================
             col_asignacion = 'Asignación' if 'Asignación' in df.columns else 'Asignaión'
             col_referencia = 'Referencia'
@@ -57,6 +63,7 @@ if archivo_subido is not None:
             col_importe = 'Importe en moneda local' if 'Importe en moneda local' in df.columns else 'Importe en ML'
             col_banco = 'Clave referencia 3'
             col_doc = 'Nº documento' if 'Nº documento' in df.columns else 'Nº doc.'
+            col_texto = 'Texto' if 'Texto' in df.columns else None
 
             columnas_requeridas = [col_referencia, col_clave, col_fecha, col_importe, col_banco, col_doc]
             faltantes = [c for c in columnas_requeridas if c not in df.columns]
@@ -66,8 +73,6 @@ if archivo_subido is not None:
 
             # =========================================================
             # 3. AUTOCOMPLETADO DE BANCO POR CUENTA DE MAYOR
-            #    (se ejecuta ANTES de ordenar, para respetar los bloques
-            #    de banco tal como vienen en el extracto original)
             # =========================================================
             mapeo_cuentas_banco = {
                 "1110056101": "BANCO DE BOGOTA",
@@ -91,20 +96,14 @@ if archivo_subido is not None:
                 if "cuenta de mayor" in asig_val.lower():
                     match_cuenta = re.search(r'(\d{6,})', asig_val)
                     cuenta_num = match_cuenta.group(1) if match_cuenta else None
-                    # Si la cuenta no está en el diccionario, NUNCA se asume el banco anterior
-                    # a ciegas: se etiqueta explícitamente con el número de cuenta para que
-                    # quede visible y no genere un error de clasificación silencioso.
                     if cuenta_num:
                         current_bank = mapeo_cuentas_banco.get(cuenta_num, f"CUENTA {cuenta_num} (sin mapear)")
 
                 if pd.notnull(banco_val) and str(banco_val).strip().lower() not in ("", "nan"):
                     current_bank = str(banco_val).strip()
-                    bancos_completados.append(current_bank)
-                else:
-                    bancos_completados.append(current_bank)
+                bancos_completados.append(current_bank)
 
             df[col_banco] = bancos_completados
-
             if col_asignacion in df.columns:
                 df = df[~df[col_asignacion].astype(str).str.contains("cuenta de mayor", case=False, na=False)].copy()
 
@@ -113,6 +112,7 @@ if archivo_subido is not None:
             # =========================================================
             df[col_doc] = pd.to_numeric(df[col_doc], errors='coerce')
             filas_antes = len(df)
+            filas_descartadas = df[df[col_doc].isna() | df[col_clave].isna()].copy()
             df = df.dropna(subset=[col_doc, col_clave]).reset_index(drop=True)
             filas_excluidas = filas_antes - len(df)
 
@@ -138,18 +138,20 @@ if archivo_subido is not None:
                 for id_temp, texto in dic_comentarios.items():
                     df.loc[df['ID_Temp'] == id_temp, 'Comentario'] = texto
 
+            def resumen_docs(sub_df):
+                return ", ".join(str(int(d)) for d in sub_df[col_doc].tolist())
+
+            def es_valor_redondo(v):
+                return (v % multiplo_redondo == 0) and v > 0
+
             df_40 = df[df[col_clave] == '40']
             df_50 = df[df[col_clave] == '50']
 
             # =========================================================
-            # 5. NIVEL 1 — CRUCE EXACTO POR REFERENCIA (100% seguro)
-            #    Banco + Importe absoluto + Fecha + Referencia/Asignación
-            #    cruzadas. Es el único tipo de cruce que se da por
-            #    conciliado sin ninguna duda posible.
+            # 5. NIVEL 1A — CRUCE EXACTO POR REFERENCIA (100% seguro)
             # =========================================================
             c1 = pd.merge(df_40, df_50,
-                          left_on=[col_banco, 'Abs_Importe', col_fecha, col_referencia],
-                          right_on=[col_banco, 'Abs_Importe', col_fecha, col_referencia],
+                          on=[col_banco, 'Abs_Importe', col_fecha, col_referencia],
                           suffixes=('_40', '_50'))
             c2 = pd.merge(df_40, df_50,
                           left_on=[col_banco, 'Abs_Importe', col_fecha, col_asignacion],
@@ -173,13 +175,35 @@ if archivo_subido is not None:
             set_comentarios(comentarios_r1)
 
             # =========================================================
-            # 6. NIVEL 2 — CRUCE ÚNICO SIN REFERENCIA
-            #    Mismo banco + importe absoluto + fecha, y SOLO cuando
-            #    existe exactamente un movimiento débito (40) y uno
-            #    crédito (50) en ese grupo. Si hay más de un candidato
-            #    posible, NO se concilia a ciegas (evita el error de
-            #    emparejar el documento equivocado): se deja como
-            #    sugerencia ambigua para revisión manual (nivel 2B).
+            # 6. NIVEL 1B — CRUCE POR REFERENCIA "LIMPIA" (NUEVO)
+            # Quita prefijos no numéricos como 'E', 'NEQUI', '*' de la
+            # Asignación/Referencia (ej. 'E3110' -> '3110') para
+            # capturar cruces que el Nivel 1A pierde por formato,
+            # sin tocar el importe ni la fecha (mismo nivel de certeza).
+            # =========================================================
+            df_p0 = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
+            df_p0['Asig_limpia'] = df_p0[col_asignacion].astype(str).str.extract(r'(\d+)')[0]
+            df_p0['Ref_limpia'] = df_p0[col_referencia].astype(str).str.extract(r'(\d+)')[0]
+
+            d40b = df_p0[df_p0[col_clave] == '40'].drop(columns=['Ref_limpia'])
+            d50b = df_p0[df_p0[col_clave] == '50'].drop(columns=['Asig_limpia'])
+            c1b = pd.merge(d40b, d50b,
+                           left_on=[col_banco, 'Abs_Importe', col_fecha, 'Asig_limpia'],
+                           right_on=[col_banco, 'Abs_Importe', col_fecha, 'Ref_limpia'],
+                           suffixes=('_40', '_50'))
+            c1b = c1b[c1b['Asig_limpia'].notna() & (c1b['Asig_limpia'] != '')]
+
+            ind_r1b = set(c1b['ID_Temp_40']) | set(c1b['ID_Temp_50'])
+            set_estado(ind_r1b, 'Conciliado - Cruce exacto (Ref. limpia)')
+
+            comentarios_r1b = {}
+            for _, r in c1b.iterrows():
+                comentarios_r1b[r['ID_Temp_40']] = f"Cruce exacto con Doc. {int(r[col_doc + '_50'])} (referencia limpiada de prefijos, ej. 'E3110'->'3110')"
+                comentarios_r1b[r['ID_Temp_50']] = f"Cruce exacto con Doc. {int(r[col_doc + '_40'])} (referencia limpiada de prefijos, ej. 'E3110'->'3110')"
+            set_comentarios(comentarios_r1b)
+
+            # =========================================================
+            # 7. NIVEL 2 — CRUCE ÚNICO SIN REFERENCIA
             # =========================================================
             df_p = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
             grp_cols = [col_banco, 'Abs_Importe', col_fecha]
@@ -187,12 +211,9 @@ if archivo_subido is not None:
             df_p40 = df_p[df_p[col_clave] == '40'].copy()
             df_p50 = df_p[df_p[col_clave] == '50'].copy()
 
-            cnt40 = df_p40.groupby(grp_cols)['ID_Temp'].transform('count')
-            cnt50 = df_p50.groupby(grp_cols)['ID_Temp'].transform('count')
-            df_p40['n40'] = cnt40
-            df_p50['n50'] = cnt50
+            df_p40['n40'] = df_p40.groupby(grp_cols)['ID_Temp'].transform('count')
+            df_p50['n50'] = df_p50.groupby(grp_cols)['ID_Temp'].transform('count')
 
-            # Solo se cruzan grupos donde AMBOS lados tienen exactamente 1 movimiento
             unicos40 = df_p40[df_p40['n40'] == 1]
             unicos50 = df_p50[df_p50['n50'] == 1]
             c_unico = pd.merge(unicos40, unicos50, on=grp_cols, suffixes=('_40', '_50'))
@@ -206,38 +227,79 @@ if archivo_subido is not None:
                 comentarios_r2[r['ID_Temp_50']] = f"Cruce único con Doc. {int(r[col_doc + '_40'])} (mismo banco/fecha/importe, sin referencia disponible, sin ambigüedad)"
             set_comentarios(comentarios_r2)
 
-            # --- Nivel 2B: grupos AMBIGUOS (más de un candidato posible) ---
+            # --- Grupos AMBIGUOS (más de un candidato posible) ---
             ambiguos40 = df_p40[(df_p40['n40'] > 1) & (~df_p40['ID_Temp'].isin(ind_r2))]
             ambiguos50 = df_p50[(df_p50['n50'] > 1) & (~df_p50['ID_Temp'].isin(ind_r2))]
 
-            def resumen_docs(sub_df):
-                return ", ".join(str(int(d)) for d in sub_df[col_doc].tolist())
+            # =========================================================
+            # 8. NIVEL 2B — DESEMPATE POR GRUPO CERRADO (NUEVO)
+            # Cuando el importe es "redondo" (múltiplo de $50k/$100k,
+            # típico de Bancolombia) y hay varios candidatos por lado,
+            # SOLO se sugiere un emparejamiento (nunca se concilia)
+            # si la cantidad de débitos y créditos del grupo coincide
+            # EXACTAMENTE: se ordenan por Nº de documento (FIFO) y se
+            # arma la sugerencia 1 a 1. Si las cantidades no coinciden,
+            # queda marcado como alto riesgo para revisión manual total.
+            # =========================================================
+            ind_r2d = set(); comentarios_r2d = {}
+            ind_amb = set(); comentarios_amb = {}
 
-            ind_amb = set()
-            comentarios_amb = {}
             for grupo, sub40 in ambiguos40.groupby(grp_cols):
-                sub50 = ambiguos50[(ambiguos50[col_banco] == grupo[0]) &
-                                    (ambiguos50['Abs_Importe'] == grupo[1]) &
-                                    (ambiguos50[col_fecha] == grupo[2])]
-                if len(sub50) == 0:
+                banco_g, importe_g, fecha_g = grupo
+                sub50 = ambiguos50[(ambiguos50[col_banco] == banco_g) &
+                                    (ambiguos50['Abs_Importe'] == importe_g) &
+                                    (ambiguos50[col_fecha] == fecha_g)]
+                if sub50.empty:
                     continue
-                docs40 = resumen_docs(sub40)
-                docs50 = resumen_docs(sub50)
-                for _, r in sub40.iterrows():
-                    ind_amb.add(r['ID_Temp'])
-                    comentarios_amb[r['ID_Temp']] = (f"Existen {len(sub50)} posibles cruces sin referencia con el mismo "
-                                                      f"banco/fecha/importe (Docs. candidatos: {docs50}) - validar manualmente cuál corresponde")
-                for _, r in sub50.iterrows():
-                    ind_amb.add(r['ID_Temp'])
-                    comentarios_amb[r['ID_Temp']] = (f"Existen {len(sub40)} posibles cruces sin referencia con el mismo "
-                                                      f"banco/fecha/importe (Docs. candidatos: {docs40}) - validar manualmente cuál corresponde")
 
+                if es_valor_redondo(importe_g):
+                    sub40_ord = sub40.sort_values(col_doc)
+                    sub50_ord = sub50.sort_values(col_doc)
+                    if len(sub40_ord) == len(sub50_ord):
+                        for (_, r40), (_, r50) in zip(sub40_ord.iterrows(), sub50_ord.iterrows()):
+                            ind_r2d.update([r40['ID_Temp'], r50['ID_Temp']])
+                            comentarios_r2d[r40['ID_Temp']] = (
+                                f"Valor redondo (${importe_g:,.0f}) con {len(sub40_ord)} débitos y {len(sub50_ord)} créditos "
+                                f"idénticos; emparejado por orden de documento (FIFO) con Doc. {int(r50[col_doc])} - VERIFICAR, "
+                                f"no confirmado por referencia"
+                            )
+                            comentarios_r2d[r50['ID_Temp']] = (
+                                f"Valor redondo (${importe_g:,.0f}) con {len(sub40_ord)} débitos y {len(sub50_ord)} créditos "
+                                f"idénticos; emparejado por orden de documento (FIFO) con Doc. {int(r40[col_doc])} - VERIFICAR, "
+                                f"no confirmado por referencia"
+                            )
+                    else:
+                        docs50 = resumen_docs(sub50_ord)
+                        docs40 = resumen_docs(sub40_ord)
+                        for _, r in sub40_ord.iterrows():
+                            ind_amb.add(r['ID_Temp'])
+                            comentarios_amb[r['ID_Temp']] = (
+                                f"Valor redondo (${importe_g:,.0f}): {len(sub40_ord)} débitos vs {len(sub50_ord)} créditos candidatos "
+                                f"(cantidades distintas, alto riesgo) - Docs créditos: {docs50}"
+                            )
+                        for _, r in sub50_ord.iterrows():
+                            ind_amb.add(r['ID_Temp'])
+                            comentarios_amb[r['ID_Temp']] = (
+                                f"Valor redondo (${importe_g:,.0f}): {len(sub50_ord)} créditos vs {len(sub40_ord)} débitos candidatos "
+                                f"(cantidades distintas, alto riesgo) - Docs débitos: {docs40}"
+                            )
+                else:
+                    docs40 = resumen_docs(sub40)
+                    docs50 = resumen_docs(sub50)
+                    for _, r in sub40.iterrows():
+                        ind_amb.add(r['ID_Temp'])
+                        comentarios_amb[r['ID_Temp']] = f"{len(sub50)} posibles cruces mismo banco/fecha/importe (Docs candidatos: {docs50})"
+                    for _, r in sub50.iterrows():
+                        ind_amb.add(r['ID_Temp'])
+                        comentarios_amb[r['ID_Temp']] = f"{len(sub40)} posibles cruces mismo banco/fecha/importe (Docs candidatos: {docs40})"
+
+            set_estado(ind_r2d, 'Sugerencia fuerte: Emparejado por FIFO en grupo cerrado')
+            set_comentarios(comentarios_r2d)
             set_estado(ind_amb, 'Sugerencia: Múltiples candidatos sin referencia')
             set_comentarios(comentarios_amb)
 
             # =========================================================
-            # 7. NIVEL 3 — SUGERENCIAS BASADAS EN REFERENCIA VÁLIDA
-            #    (para lo que sigue pendiente tras los niveles 1 y 2)
+            # 9. NIVEL 3 — SUGERENCIAS BASADAS EN REFERENCIA VÁLIDA
             # =========================================================
             df_pend = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
             df_pend['Ref_Limpia'] = df_pend[col_referencia].astype(str).str.strip().str.lower()
@@ -246,7 +308,7 @@ if archivo_subido is not None:
             df_40n = df_validos[df_validos[col_clave] == '40'].copy()
             df_50n = df_validos[df_validos[col_clave] == '50'].copy()
 
-            # --- 7A: Validar con error de fecha (misma ref/banco/importe, fecha distinta) ---
+            # --- 9A: Validar con error de fecha ---
             sA = pd.merge(df_40n, df_50n, on=[col_banco, 'Abs_Importe', 'Ref_Limpia'], suffixes=('_40', '_50'))
             sA['Dif_Dias'] = (sA['Fecha_Calc_40'] - sA['Fecha_Calc_50']).dt.days.abs()
             sA = sA[(sA['Dif_Dias'] > 0) & (sA['Dif_Dias'] <= tol_dias)]
@@ -263,7 +325,7 @@ if archivo_subido is not None:
             df_40n = df_40n[~df_40n['ID_Temp'].isin(ind_A)]
             df_50n = df_50n[~df_50n['ID_Temp'].isin(ind_A)]
 
-            # --- 7B: Sugerencia de reclasificación de banco (misma ref/importe/fecha, banco distinto) ---
+            # --- 9B: Sugerencia de reclasificación de banco ---
             sB = pd.merge(df_40n, df_50n, on=['Abs_Importe', col_fecha, 'Ref_Limpia'], suffixes=('_40', '_50'))
             sB = sB[sB[f'{col_banco}_40'] != sB[f'{col_banco}_50']]
             sB = sB.drop_duplicates('ID_Temp_40').drop_duplicates('ID_Temp_50')
@@ -279,7 +341,7 @@ if archivo_subido is not None:
             df_40n = df_40n[~df_40n['ID_Temp'].isin(ind_B)]
             df_50n = df_50n[~df_50n['ID_Temp'].isin(ind_B)]
 
-            # --- 7C: Revisar diferencia de valor (misma ref/banco/fecha, importe distinto dentro de tolerancia) ---
+            # --- 9C: Revisar diferencia de valor ---
             sC = pd.merge(df_40n, df_50n, on=[col_banco, col_fecha, 'Ref_Limpia'], suffixes=('_40', '_50'))
             sC['Dif_Valor'] = (sC['Abs_Importe_40'] - sC['Abs_Importe_50']).abs()
             sC['Dif_Pct'] = sC['Dif_Valor'] / sC[['Abs_Importe_40', 'Abs_Importe_50']].max(axis=1)
@@ -299,7 +361,14 @@ if archivo_subido is not None:
             df.loc[sin_pista & (df['Comentario'] == ''), 'Comentario'] = 'Sin coincidencia ni sugerencia encontrada - requiere revisión manual completa'
 
             # =========================================================
-            # 8. LIMPIEZA FINAL Y FORMATO DE FECHAS
+            # 10. CONTROL DE INTEGRIDAD (ninguna fila se pierde)
+            # =========================================================
+            total_filas_entrada = filas_antes
+            total_filas_salida = len(df) + len(filas_descartadas)
+            cuadre_ok = total_filas_entrada == total_filas_salida
+
+            # =========================================================
+            # 11. LIMPIEZA FINAL Y FORMATO DE FECHAS
             # =========================================================
             df_final = df.drop(columns=['ID_Temp', 'Abs_Importe', 'Fecha_Calc'], errors='ignore')
 
@@ -308,31 +377,37 @@ if archivo_subido is not None:
                 df_final[col_f] = pd.to_datetime(df_final[col_f], errors='coerce').dt.strftime('%d/%m/%Y')
 
             # =========================================================
-            # FUNCIÓN DE COLORES (resalta según el estado)
+            # FUNCIÓN DE COLORES
             # =========================================================
             def resaltar_conciliados(row):
                 est = str(row['Estado_Conciliacion']).lower()
                 if 'cruce exacto' in est:
-                    return ['background-color: #D4EFDF'] * len(row)          # Verde - 100% seguro
+                    return ['background-color: #D4EFDF'] * len(row)   # Verde - 100% seguro
                 elif 'cruce unico' in est:
-                    return ['background-color: #D6EAF8'] * len(row)          # Azul - seguro, sin referencia
-                elif 'múltiples candidatos' in est or 'multiples candidatos' in est:
-                    return ['background-color: #FDEBD0'] * len(row)          # Durazno - ambiguo, revisar
+                    return ['background-color: #D6EAF8'] * len(row)   # Azul - seguro, sin referencia
+                elif 'fifo en grupo cerrado' in est:
+                    return ['background-color: #AED6F1'] * len(row)   # Celeste - valor redondo, alta confianza
+                elif 'múltiples candidatos' in est or 'multiples candidatos' in est or 'cantidad de candidatos' in est:
+                    return ['background-color: #FDEBD0'] * len(row)   # Durazno - ambiguo, revisar
                 elif 'error de fecha' in est:
-                    return ['background-color: #FCF3CF'] * len(row)          # Amarillo - alerta fecha
+                    return ['background-color: #FCF3CF'] * len(row)   # Amarillo - alerta fecha
                 elif 'reclasificación' in est or 'reclasificacion' in est:
-                    return ['background-color: #F5B7B1'] * len(row)          # Rojo claro - alerta banco
+                    return ['background-color: #F5B7B1'] * len(row)   # Rojo claro - alerta banco
                 elif 'diferencia de valor' in est:
-                    return ['background-color: #FAD7A1'] * len(row)          # Naranja - alerta valor
+                    return ['background-color: #FAD7A1'] * len(row)   # Naranja - alerta valor
                 return [''] * len(row)
 
             # =========================================================
-            # 9. EXPORTACIÓN: 1 PESTAÑA POR BANCO + PESTAÑA CONSOLIDADA
+            # 12. EXPORTACIÓN
             # =========================================================
             output = io.BytesIO()
-            bancos_unicos = df_final[col_banco].unique()
+            bancos_unicos = [b for b in df_final[col_banco].unique() if str(b).strip().lower() not in ('', 'nan')]
 
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                resumen = df_final['Estado_Conciliacion'].value_counts().reset_index()
+                resumen.columns = ['Estado', 'Cantidad de registros']
+                resumen.to_excel(writer, index=False, sheet_name='RESUMEN')
+
                 for banco in bancos_unicos:
                     df_banco = df_final[df_final[col_banco] == banco].copy()
                     df_banco = df_banco.sort_values(by=col_importe, ascending=True)
@@ -346,34 +421,36 @@ if archivo_subido is not None:
                     styled_banco = df_banco.style.apply(resaltar_conciliados, axis=1)
                     styled_banco.to_excel(writer, index=False, sheet_name=nombre_pestana)
 
-                # Pestaña consolidada de todo lo que NO quedó 100% conciliado
                 df_novedades = df_final[~df_final['Estado_Conciliacion'].str.contains('Conciliado', na=False)].copy()
                 if not df_novedades.empty:
                     df_novedades = df_novedades.sort_values(by=['Estado_Conciliacion', col_importe], ascending=[True, True])
                     styled_novedades = df_novedades.style.apply(resaltar_conciliados, axis=1)
                     styled_novedades.to_excel(writer, index=False, sheet_name='NOVEDADES_Y_ALERTAS')
 
-                # Pestaña resumen
-                resumen = df_final['Estado_Conciliacion'].value_counts().reset_index()
-                resumen.columns = ['Estado', 'Cantidad de registros']
-                resumen.to_excel(writer, index=False, sheet_name='RESUMEN')
+                if not filas_descartadas.empty:
+                    filas_descartadas.to_excel(writer, index=False, sheet_name='DESCARTADAS_SIN_DOC_O_CT')
 
             # =========================================================
-            # 10. INTERFAZ Y DESCARGA
+            # 13. INTERFAZ Y DESCARGA
             # =========================================================
             st.success("¡Conciliación Integral terminada! Todo lo que no es 100% seguro quedó marcado con color y comentario.")
 
-            conciliados_exactos = len(ind_r1)
-            conciliados_unicos = len(ind_r2)
-            alertas = len(ind_amb) + len(ind_A) + len(ind_B) + len(ind_C)
-            pendientes_sin_pista = len(df_final) - conciliados_exactos - conciliados_unicos - alertas
+            if not cuadre_ok:
+                st.warning("⚠️ Alerta de integridad: el total de filas de salida no coincide con el de entrada. Revisa la pestaña DESCARTADAS.")
 
-            col1, col2, col3, col4, col5 = st.columns(5)
+            conciliados_exactos = len(ind_r1) + len(ind_r1b)
+            conciliados_unicos = len(ind_r2)
+            fifo_grupo = len(ind_r2d)
+            alertas = len(ind_amb) + len(ind_A) + len(ind_B) + len(ind_C)
+            pendientes_sin_pista = len(df_final) - conciliados_exactos - conciliados_unicos - fifo_grupo - alertas
+
+            col1, col2, col3, col4, col5, col6 = st.columns(6)
             col1.metric("Bancos procesados", len(bancos_unicos))
             col2.metric("Conciliado exacto", conciliados_exactos)
             col3.metric("Conciliado único", conciliados_unicos)
-            col4.metric("Alertas (revisar)", alertas)
-            col5.metric("Sin ninguna pista", pendientes_sin_pista)
+            col4.metric("Fuerte (val. redondo)", fifo_grupo)
+            col5.metric("Alertas (revisar)", alertas)
+            col6.metric("Sin ninguna pista", pendientes_sin_pista)
 
             if filas_excluidas > 0:
                 st.warning(f"⚠️ Se excluyeron {filas_excluidas} filas sin Nº de documento o sin clave contable (totales, subtotales o filas vacías).")
