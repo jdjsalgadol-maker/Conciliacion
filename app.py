@@ -161,8 +161,8 @@ if archivo_subido is not None:
                     return mapeo_referencias_dist[ref_limpia]
                 
                 # 2. Buscar patrones combinando Texto, Asignación y Referencia
-                texto_val = str(row.get(col_texto, ""))
-                asig_val = str(row.get(col_asignacion, ""))
+                texto_val = str(row.get(col_texto, "")) if col_texto else ""
+                asig_val = str(row.get(col_asignacion, "")) if col_asignacion else ""
                 t_global = f"{ref_val} {texto_val} {asig_val}".upper()
                 
                 if 'DOSQ' in t_global or 'D504' in t_global: return 'Dist Dosquebradas'
@@ -181,7 +181,7 @@ if archivo_subido is not None:
                         
                 return 'Sin clasificar'
 
-            # Aplicamos la clasificación a TODAS las filas (40 y 50) para permitir cruces bidireccionales
+            # Aplicamos la clasificación a TODAS las filas para permitir cruces
             df['Distribuidora'] = df.apply(clasificar_distribuidora, axis=1)
 
             # =========================================================
@@ -430,7 +430,8 @@ if archivo_subido is not None:
             # =========================================================
             # 11. LIMPIEZA FINAL Y FORMATO
             # =========================================================
-            df_final = df.drop(columns=['ID_Temp', 'Abs_Importe', 'Fecha_Calc', 'Distribuidora'], errors='ignore')
+            # AQUÍ ESTABA EL ERROR: Quité 'Distribuidora' de la función .drop() para que la deje viva en tu Excel
+            df_final = df.drop(columns=['ID_Temp', 'Abs_Importe', 'Fecha_Calc'], errors='ignore')
             columnas_fecha = [c for c in df_final.columns if 'fe.' in c.lower() or 'fecha' in c.lower() or 'fe-' in c.lower()]
             for col_f in columnas_fecha:
                 df_final[col_f] = pd.to_datetime(df_final[col_f], errors='coerce').dt.strftime('%d/%m/%Y')
