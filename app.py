@@ -60,8 +60,6 @@ if archivo_subido is not None:
             col_banco = 'Clave referencia 3'
             col_doc = 'Nº documento' if 'Nº documento' in df.columns else 'Nº doc.'
             col_texto = 'Texto' if 'Texto' in df.columns else None
-            
-            # Nueva columna para reglas de Datáfono
             col_clase_doc = 'Clase de documento' if 'Clase de documento' in df.columns else 'Clase doc.'
 
             columnas_requeridas = [col_referencia, col_clave, col_fecha, col_importe, col_banco, col_doc, col_clase_doc]
@@ -259,8 +257,6 @@ if archivo_subido is not None:
 
             # =========================================================
             # 7. NUEVO NIVEL 1C — CRUCE MÚLTIPLE (1:N) PARA DATÁFONOS (IP vs CB)
-            # Evalúa suma de múltiples IPs frente a 1 CB basado estrictamente
-            # en el cruce de referencias mapeadas (ej: Datafono -> 3001)
             # =========================================================
             df_p_ipcb = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
             df_p_ipcb['Ref_Homologada'] = df_p_ipcb.apply(obtener_ref_homologada, axis=1)
@@ -273,7 +269,6 @@ if archivo_subido is not None:
             com_1c_ipcb = {}
 
             if not df_ip.empty and not df_cb.empty:
-                # Agrupar las sumas de todos los IP por banco, fecha y la misma Ref traducida
                 grp_ip = df_ip.groupby([col_banco, col_fecha, 'Ref_Homologada'])['Abs_Importe'].sum().reset_index()
                 grp_ip.rename(columns={'Abs_Importe': 'Suma_IP'}, inplace=True)
 
@@ -304,8 +299,10 @@ if archivo_subido is not None:
 
             # =========================================================
             # 8. NIVEL 1D — SECTORIZACIÓN POR DISTRIBUIDORA
+            # PREVENCIÓN: IP excluidos (solo cruzan en 1C)
             # =========================================================
             df_p1d = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
+            df_p1d = df_p1d[df_p1d[col_clase_doc].astype(str).str.upper() != 'IP'] # BLINDAJE IP
             df_p1d = df_p1d[df_p1d['Distribuidora'] != 'Sin clasificar']
 
             d40c = df_p1d[df_p1d[col_clave] == '40'].copy()
@@ -358,11 +355,10 @@ if archivo_subido is not None:
 
             # =========================================================
             # 9. NIVEL 2 — CRUCE ÚNICO SIN REFERENCIA NI SECTORIZACIÓN
-            # PREVENCIÓN: Documentos 'IP' son exclusivos de referencia (Regla interna),
-            # por lo que no se permite que crucen por simple coincidencia de monto y fecha sin ref.
+            # PREVENCIÓN: IP excluidos
             # =========================================================
             df_p = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
-            df_p = df_p[df_p[col_clase_doc].astype(str).str.upper() != 'IP'] # Blindaje regla IP
+            df_p = df_p[df_p[col_clase_doc].astype(str).str.upper() != 'IP'] # BLINDAJE IP
             
             grp_cols = [col_banco, 'Abs_Importe', col_fecha]
 
@@ -437,8 +433,11 @@ if archivo_subido is not None:
 
             # =========================================================
             # 11. NIVEL 3 — SUGERENCIAS BASADAS EN REFERENCIA VÁLIDA
+            # PREVENCIÓN: IP excluidos
             # =========================================================
             df_pend = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
+            df_pend = df_pend[df_pend[col_clase_doc].astype(str).str.upper() != 'IP'] # BLINDAJE IP
+            
             df_pend['Ref_Limpia'] = df_pend[col_referencia].astype(str).str.strip().str.lower()
             df_validos = df_pend[~df_pend['Ref_Limpia'].isin(['nan', '', 'none', '0', '/'])].copy()
 
@@ -457,11 +456,11 @@ if archivo_subido is not None:
                 mismo_periodo = (f40.month == f50.month) and (f40.year == f50.year)
 
                 if dif <= tol_dias:
-                    estado_asignado = ' Diferencia de Fecha (Mismo Periodo)' if mismo_periodo else ' DIFERENTE PERIODO CONTABLE'
+                    estado_asignado = 'Alerta: Diferencia de Fecha (Mismo Periodo)' if mismo_periodo else 'Alerta: DIFERENTE PERIODO CONTABLE'
                     txt_estado = "mismo periodo" if mismo_periodo else "¡DIFERENTE MES/AÑO!"
                     com_txt = f"Misma referencia/banco/importe, pero difieren {dif} día(s) ({txt_estado})"
                 elif mismo_periodo:
-                    estado_asignado = ' Diferencia de Fecha MAYOR 3 DIAS (Mismo Periodo)'
+                    estado_asignado = 'Alerta: Diferencia de Fecha EXTENDIDA (Mismo Periodo)'
                     com_txt = f"Misma referencia/banco/importe, difiere {dif} días (supera tolerancia), pero es del mismo mes"
                 else:
                     continue 
@@ -481,7 +480,7 @@ if archivo_subido is not None:
             sB = sB.drop_duplicates('ID_Temp_40').drop_duplicates('ID_Temp_50')
 
             ind_B = set(sB['ID_Temp_40']) | set(sB['ID_Temp_50'])
-            set_estado(ind_B, ' Reclasificación de banco')
+            set_estado(ind_B, 'Alerta: Reclasificación de banco')
             com_B = {}
             for _, r in sB.iterrows():
                 com_B[r['ID_Temp_40']] = f"Misma referencia/importe/fecha, pero en banco distinto '{r[col_banco+'_50']}'. Doc: {int(r[col_doc+'_50'])}"
@@ -501,7 +500,7 @@ if archivo_subido is not None:
             sC = sC.sort_values('Dif_Valor').drop_duplicates('ID_Temp_40').drop_duplicates('ID_Temp_50')
 
             ind_C = set(sC['ID_Temp_40']) | set(sC['ID_Temp_50'])
-            set_estado(ind_C, ' Diferencia de valor')
+            set_estado(ind_C, 'Alerta: Diferencia de valor')
             com_C = {}
             for _, r in sC.iterrows():
                 com_C[r['ID_Temp_40']] = f"Misma referencia/banco/fecha, con diferencia de ${r['Dif_Valor']:,.0f} ({r['Dif_Pct']*100:.2f}%). Doc: {int(r[col_doc+'_50'])}"
@@ -510,7 +509,11 @@ if archivo_subido is not None:
 
             # --- Lo que sigue pendiente ---
             sin_pista = df['Estado_Conciliacion'] == 'Pendiente'
-            df.loc[sin_pista & (df['Comentario'] == ''), 'Comentario'] = 'Sin coincidencia ni sugerencia encontrada - requiere revisión manual completa'
+            es_ip = df[col_clase_doc].astype(str).str.upper() == 'IP'
+            
+            # Asignación de comentario especial para IP
+            df.loc[sin_pista & es_ip & (df['Comentario'] == ''), 'Comentario'] = 'Sin coincidencia - IP exclusivo requiere CB correspondiente'
+            df.loc[sin_pista & ~es_ip & (df['Comentario'] == ''), 'Comentario'] = 'Sin coincidencia ni sugerencia encontrada - requiere revisión manual completa'
 
             # =========================================================
             # 12. CONTROL DE INTEGRIDAD
