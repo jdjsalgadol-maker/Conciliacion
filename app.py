@@ -7,7 +7,7 @@ import re
 # ============================================================
 # CONFIGURACIÓN DE LA PÁGINA
 # ============================================================
-st.set_page_config(page_title="Conciliación Integral @JuanS", layout="wide")
+st.set_page_config(page_title="Conciliación Integral", layout="wide")
 
 hide_style = """
     <style>
@@ -69,6 +69,10 @@ if archivo_subido is not None:
             faltantes = [c for c in columnas_requeridas if c not in df.columns]
             if faltantes:
                 st.error(f"No se encontraron estas columnas obligatorias en el archivo: {faltantes}")
+                st.stop()
+                
+            if 'Asignación' not in df.columns and 'Asignaión' not in df.columns:
+                st.error("No se encontró la columna de Asignación en el archivo.")
                 st.stop()
 
             # =========================================================
@@ -144,23 +148,25 @@ if archivo_subido is not None:
             def es_valor_redondo(v):
                 return (v % multiplo_redondo == 0) and v > 0
 
-            df_40 = df[df[col_clave] == '40']
-            df_50 = df[df[col_clave] == '50']
+            df_40 = df[df[col_clave] == '40'].copy()
+            df_50 = df[df[col_clave] == '50'].copy()
 
             # =========================================================
             # 5. NIVEL 1A — CRUCE EXACTO POR REFERENCIA (100% seguro)
             # =========================================================
-            c1 = pd.merge(df_40, df_50,
-                          on=[col_banco, 'Abs_Importe', col_fecha, col_referencia],
-                          suffixes=('_40', '_50'))
-            c2 = pd.merge(df_40, df_50,
-                          left_on=[col_banco, 'Abs_Importe', col_fecha, col_asignacion],
-                          right_on=[col_banco, 'Abs_Importe', col_fecha, col_referencia],
-                          suffixes=('_40', '_50'))
-            c3 = pd.merge(df_40, df_50,
-                          left_on=[col_banco, 'Abs_Importe', col_fecha, col_referencia],
-                          right_on=[col_banco, 'Abs_Importe', col_fecha, col_asignacion],
-                          suffixes=('_40', '_50'))
+            # Se usa 'Turno' para evitar el producto cartesiano en memoria
+            df_40['Turno'] = df_40.groupby([col_banco, 'Abs_Importe', col_fecha, col_referencia]).cumcount()
+            df_50['Turno'] = df_50.groupby([col_banco, 'Abs_Importe', col_fecha, col_referencia]).cumcount()
+            
+            c1 = pd.merge(df_40, df_50, on=[col_banco, 'Abs_Importe', col_fecha, col_referencia, 'Turno'], suffixes=('_40', '_50'))
+            
+            df_40['Turno2'] = df_40.groupby([col_banco, 'Abs_Importe', col_fecha, col_asignacion]).cumcount()
+            df_50['Turno2'] = df_50.groupby([col_banco, 'Abs_Importe', col_fecha, col_referencia]).cumcount()
+            c2 = pd.merge(df_40, df_50, left_on=[col_banco, 'Abs_Importe', col_fecha, col_asignacion, 'Turno2'], right_on=[col_banco, 'Abs_Importe', col_fecha, col_referencia, 'Turno2'], suffixes=('_40', '_50'))
+            
+            df_40['Turno3'] = df_40.groupby([col_banco, 'Abs_Importe', col_fecha, col_referencia]).cumcount()
+            df_50['Turno3'] = df_50.groupby([col_banco, 'Abs_Importe', col_fecha, col_asignacion]).cumcount()
+            c3 = pd.merge(df_40, df_50, left_on=[col_banco, 'Abs_Importe', col_fecha, col_referencia, 'Turno3'], right_on=[col_banco, 'Abs_Importe', col_fecha, col_asignacion, 'Turno3'], suffixes=('_40', '_50'))
 
             ind_r1 = (set(c1['ID_Temp_40']) | set(c1['ID_Temp_50']) |
                       set(c2['ID_Temp_40']) | set(c2['ID_Temp_50']) |
@@ -175,11 +181,7 @@ if archivo_subido is not None:
             set_comentarios(comentarios_r1)
 
             # =========================================================
-            # 6. NIVEL 1B — CRUCE POR REFERENCIA "LIMPIA" (NUEVO)
-            # Quita prefijos no numéricos como 'E', 'NEQUI', '*' de la
-            # Asignación/Referencia (ej. 'E3110' -> '3110') para
-            # capturar cruces que el Nivel 1A pierde por formato,
-            # sin tocar el importe ni la fecha (mismo nivel de certeza).
+            # 6. NIVEL 1B — CRUCE POR REFERENCIA "LIMPIA" 
             # =========================================================
             df_p0 = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
             df_p0['Asig_limpia'] = df_p0[col_asignacion].astype(str).str.extract(r'(\d+)')[0]
@@ -187,9 +189,14 @@ if archivo_subido is not None:
 
             d40b = df_p0[df_p0[col_clave] == '40'].drop(columns=['Ref_limpia'])
             d50b = df_p0[df_p0[col_clave] == '50'].drop(columns=['Asig_limpia'])
+            
+            # Se usa 'Turno_b' por eficiencia de memoria en la nube
+            d40b['Turno_b'] = d40b.groupby([col_banco, 'Abs_Importe', col_fecha, 'Asig_limpia']).cumcount()
+            d50b['Turno_b'] = d50b.groupby([col_banco, 'Abs_Importe', col_fecha, 'Ref_limpia']).cumcount()
+            
             c1b = pd.merge(d40b, d50b,
-                           left_on=[col_banco, 'Abs_Importe', col_fecha, 'Asig_limpia'],
-                           right_on=[col_banco, 'Abs_Importe', col_fecha, 'Ref_limpia'],
+                           left_on=[col_banco, 'Abs_Importe', col_fecha, 'Asig_limpia', 'Turno_b'],
+                           right_on=[col_banco, 'Abs_Importe', col_fecha, 'Ref_limpia', 'Turno_b'],
                            suffixes=('_40', '_50'))
             c1b = c1b[c1b['Asig_limpia'].notna() & (c1b['Asig_limpia'] != '')]
 
@@ -232,14 +239,7 @@ if archivo_subido is not None:
             ambiguos50 = df_p50[(df_p50['n50'] > 1) & (~df_p50['ID_Temp'].isin(ind_r2))]
 
             # =========================================================
-            # 8. NIVEL 2B — DESEMPATE POR GRUPO CERRADO (NUEVO)
-            # Cuando el importe es "redondo" (múltiplo de $50k/$100k,
-            # típico de Bancolombia) y hay varios candidatos por lado,
-            # SOLO se sugiere un emparejamiento (nunca se concilia)
-            # si la cantidad de débitos y créditos del grupo coincide
-            # EXACTAMENTE: se ordenan por Nº de documento (FIFO) y se
-            # arma la sugerencia 1 a 1. Si las cantidades no coinciden,
-            # queda marcado como alto riesgo para revisión manual total.
+            # 8. NIVEL 2B — DESEMPATE POR GRUPO CERRADO
             # =========================================================
             ind_r2d = set(); comentarios_r2d = {}
             ind_amb = set(); comentarios_amb = {}
@@ -344,7 +344,11 @@ if archivo_subido is not None:
             # --- 9C: Revisar diferencia de valor ---
             sC = pd.merge(df_40n, df_50n, on=[col_banco, col_fecha, 'Ref_Limpia'], suffixes=('_40', '_50'))
             sC['Dif_Valor'] = (sC['Abs_Importe_40'] - sC['Abs_Importe_50']).abs()
-            sC['Dif_Pct'] = sC['Dif_Valor'] / sC[['Abs_Importe_40', 'Abs_Importe_50']].max(axis=1)
+            
+            # Cálculo seguro contra división por cero
+            max_importe = sC[['Abs_Importe_40', 'Abs_Importe_50']].max(axis=1)
+            sC['Dif_Pct'] = np.where(max_importe == 0, 0, sC['Dif_Valor'] / max_importe)
+            
             sC = sC[(sC['Dif_Valor'] > 0) & ((sC['Dif_Valor'] <= tol_valor_abs) | (sC['Dif_Pct'] <= tol_valor_pct))]
             sC = sC.sort_values('Dif_Valor').drop_duplicates('ID_Temp_40').drop_duplicates('ID_Temp_50')
 
