@@ -136,33 +136,63 @@ if archivo_subido is not None:
             df['Comentario'] = ''
 
             # --- NUEVO: 4B. CLASIFICACIÓN DE DISTRIBUIDORAS (CLAVE 40) ---
-            def clasificar_distribuidora(texto):
-                if pd.isna(texto):
-                    return 'Sin clasificar'
+            # Base de datos fija proporcionada
+            mapeo_referencias_dist = {
+                "11760923": "Dist Acopi", "11761277": "Dist Acopi", "11761293": "Dist Acopi",
+                "11761327": "Dist Acopi", "11761301": "Dist Acopi", "12273934": "Dist Acopi",
+                "11761319": "Dist Acopi", "12273900": "Dist Acopi", "12273926": "Dist Acopi",
+                "14632012": "Dist Acopi", "15186547": "Dist Acopi", "13048756": "Dist Acopi",
+                "15186539": "Dist Acopi", "16219602": "Dist Acopi", "16591240": "Dist Acopi",
+                "16634586": "Dist Acopi", "14885164": "Dist Acopi", "19827765": "Dist Acopi",
+                "11761350": "Dist Buga", "12161154": "Dist Buga", "14294946": "Dist Buga",
+                "15926645": "Dist Buga", "17608589": "Dist Buga",
+                "11831583": "Dist Dosquebradas", "12161162": "Dist Dosquebradas",
+                "12161121": "Dist Dosquebradas", "12161139": "Dist Dosquebradas",
+                "12874475": "Dist Dosquebradas", "15190309": "Dist Dosquebradas",
+                "14468144": "Dist Dosquebradas", "12500773": "Dist Dosquebradas",
+                "14468151": "Dist Dosquebradas", "14651459": "Dist Dosquebradas",
+                "15444946": "Dist Dosquebradas", "16062176": "Dist Dosquebradas",
+                "20836698": "Dist Dosquebradas", "72806854": "Dist Dosquebradas",
+                "20719829": "Dist Dosquebradas",
+                "15536188": "Dist Pasto", "12637294": "Dist Pasto", "11844685": "Dist Pasto",
+                "20235651": "Dist Pasto", "15536170": "Dist Pasto", "17549197": "Dist Pasto",
+                "17608605": "Dist Pasto",
+                "17968405": "VENTA EN LINEA"
+            }
+
+            def clasificar_distribuidora(row):
+                ref_val = str(row.get(col_referencia, "")).strip()
+                # Limpiar el formato ".0" si excel lo exportó como float
+                ref_val = re.sub(r'\.0$', '', ref_val)
                 
-                texto_str = str(texto).upper()
+                # 1. Prioridad: Buscar en la base de datos de referencias
+                if ref_val in mapeo_referencias_dist:
+                    return mapeo_referencias_dist[ref_val]
                 
-                # Búsqueda por código explícito
-                if 'D502' in texto_str: return 'Dist Buga'
-                if 'D503' in texto_str: return 'Dist Acopi'
-                if 'D504' in texto_str: return 'Dist Dosquebradas'
-                if 'D505' in texto_str: return 'Dist Pasto'
-                
-                # Búsqueda por rangos numéricos de 4 dígitos
-                numeros = re.findall(r'\b\d{4}\b', texto_str)
-                for n in numeros:
-                    num = int(n)
-                    if 2000 <= num <= 2999: return 'Dist Buga'
-                    if 3000 <= num <= 3999: return 'Dist Acopi'
-                    if 4000 <= num <= 4999: return 'Dist Dosquebradas'
-                    if 6000 <= num <= 6999: return 'Dist Pasto'
+                # 2. Prioridad: Buscar patrones en el Texto si la referencia no estaba
+                texto_val = row.get(col_texto, "")
+                if pd.notna(texto_val) and str(texto_val).strip() != "":
+                    texto_str = str(texto_val).upper()
                     
+                    if 'D502' in texto_str: return 'Dist Buga'
+                    if 'D503' in texto_str: return 'Dist Acopi'
+                    if 'D504' in texto_str: return 'Dist Dosquebradas'
+                    if 'D505' in texto_str: return 'Dist Pasto'
+                    
+                    numeros = re.findall(r'\b\d{4}\b', texto_str)
+                    for n in numeros:
+                        num = int(n)
+                        if 2000 <= num <= 2999: return 'Dist Buga'
+                        if 3000 <= num <= 3999: return 'Dist Acopi'
+                        if 4000 <= num <= 4999: return 'Dist Dosquebradas'
+                        if 6000 <= num <= 6999: return 'Dist Pasto'
+                        
                 return 'Sin clasificar'
 
+            # Aplicar la lógica únicamente a la Clave 40
             df['Distribuidora'] = 'N/A'
-            if col_texto is not None:
-                mask_40 = df[col_clave] == '40'
-                df.loc[mask_40, 'Distribuidora'] = df.loc[mask_40, col_texto].apply(clasificar_distribuidora)
+            mask_40 = df[col_clave] == '40'
+            df.loc[mask_40, 'Distribuidora'] = df.apply(lambda r: clasificar_distribuidora(r) if r[col_clave] == '40' else 'N/A', axis=1)
             # -----------------------------------------------------------
 
             def set_estado(indices, estado):
