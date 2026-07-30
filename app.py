@@ -22,7 +22,7 @@ st.title("🏦 Conciliación Integral Multibanco 🤖")
 st.write(
     "Sube tu archivo consolidado. El sistema concilia de forma **conservadora**: "
     "solo marca como *Conciliado* (verde) lo que tiene evidencia inequívoca — referencia "
-    "exacta, cruces múltiples de datáfonos (IP vs CB), sectorización por sede única, "
+    "exacta, cruces múltiples de datáfonos sumados (IP vs CB), sectorización por sede única, "
     "o cruce único sin ambigüedad. Todo lo ambiguo genera alertas de validación."
 )
 
@@ -256,7 +256,9 @@ if archivo_subido is not None:
             set_comentarios(comentarios_r1b)
 
             # =========================================================
-            # 7. NIVEL 1C — CRUCE MÚLTIPLE (1:N) PARA DATÁFONOS (IP vs CB)
+            # 7. NUEVO NIVEL 1C — CRUCE MÚLTIPLE (M:N) PARA DATÁFONOS
+            # Compara la Suma Global de IP vs Suma Global de CB 
+            # por banco, fecha y referencia homologada
             # =========================================================
             df_p_ipcb = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
             df_p_ipcb['Ref_Homologada'] = df_p_ipcb.apply(obtener_ref_homologada, axis=1)
@@ -269,14 +271,13 @@ if archivo_subido is not None:
             com_1c_ipcb = {}
 
             if not df_ip.empty and not df_cb.empty:
-                grp_ip = df_ip.groupby([col_banco, col_fecha, 'Ref_Homologada'])['Abs_Importe'].sum().reset_index()
-                grp_ip.rename(columns={'Abs_Importe': 'Suma_IP'}, inplace=True)
+                grp_ip = df_ip.groupby([col_banco, col_fecha, 'Ref_Homologada'])['Abs_Importe'].sum().reset_index(name='Suma_IP')
+                grp_cb = df_cb.groupby([col_banco, col_fecha, 'Ref_Homologada'])['Abs_Importe'].sum().reset_index(name='Suma_CB')
 
-                merged_ipcb = pd.merge(df_cb, grp_ip, on=[col_banco, col_fecha, 'Ref_Homologada'])
-                matches_ipcb = merged_ipcb[merged_ipcb['Abs_Importe'] == merged_ipcb['Suma_IP']]
+                merged_ipcb = pd.merge(grp_cb, grp_ip, on=[col_banco, col_fecha, 'Ref_Homologada'])
+                matches_ipcb = merged_ipcb[merged_ipcb['Suma_CB'] == merged_ipcb['Suma_IP']]
 
                 for _, m in matches_ipcb.iterrows():
-                    cb_id = m['ID_Temp']
                     banco_val = m[col_banco]
                     fecha_val = m[col_fecha]
                     ref_val = m['Ref_Homologada']
@@ -284,15 +285,23 @@ if archivo_subido is not None:
                     ip_subset = df_ip[(df_ip[col_banco] == banco_val) & 
                                       (df_ip[col_fecha] == fecha_val) & 
                                       (df_ip['Ref_Homologada'] == ref_val)]
+                                      
+                    cb_subset = df_cb[(df_cb[col_banco] == banco_val) & 
+                                      (df_cb[col_fecha] == fecha_val) & 
+                                      (df_cb['Ref_Homologada'] == ref_val)]
 
                     ip_ids = ip_subset['ID_Temp'].tolist()
+                    cb_ids = cb_subset['ID_Temp'].tolist()
+                    
                     docs_ip = resumen_docs(ip_subset)
+                    docs_cb = resumen_docs(cb_subset)
 
-                    ind_1c_ipcb.update([cb_id] + ip_ids)
+                    ind_1c_ipcb.update(ip_ids + cb_ids)
 
-                    com_1c_ipcb[cb_id] = f"Cruce múltiple Datáfono (Suma de {len(ip_ids)} IP). Ref. Interna: {ref_val}. Docs IP: {docs_ip}"
+                    for cb_id in cb_ids:
+                        com_1c_ipcb[cb_id] = f"Cruce múltiple Datáfono (Suma de {len(ip_ids)} IP = Suma de {len(cb_ids)} CB). Ref: {ref_val}. Docs IP: {docs_ip}"
                     for ip_id in ip_ids:
-                        com_1c_ipcb[ip_id] = f"Cruce múltiple Datáfono (Parte de consolidado CB). Ref. Interna: {ref_val}. Doc CB: {int(m[col_doc])}"
+                        com_1c_ipcb[ip_id] = f"Cruce múltiple Datáfono (Suma de {len(ip_ids)} IP = Suma de {len(cb_ids)} CB). Ref: {ref_val}. Docs CB: {docs_cb}"
 
             set_estado(ind_1c_ipcb, 'Conciliado - Cruce múltiple Datáfono (IP vs CB)')
             set_comentarios(com_1c_ipcb)
@@ -430,11 +439,9 @@ if archivo_subido is not None:
             set_comentarios(comentarios_amb)
 
             # =========================================================
-            # 11. NIVEL 3 — SUGERENCIAS BASADAS EN REFERENCIA VÁLIDA
-            # Aquí SÍ se permite que los IP crucen si la referencia es exacta
+            # 11. NIVEL 3 — SUGERENCIAS AVANZADAS Y ALERTAS (Valor y Fecha)
             # =========================================================
             df_pend = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
-            # Ya NO blindamos a los IP en este nivel. Si coinciden en ref, se alertan.
             
             df_pend['Ref_Limpia'] = df_pend[col_referencia].astype(str).str.strip().str.lower()
             df_validos = df_pend[~df_pend['Ref_Limpia'].isin(['nan', '', 'none', '0', '/'])].copy()
@@ -442,7 +449,7 @@ if archivo_subido is not None:
             df_40n = df_validos[df_validos[col_clave] == '40'].copy()
             df_50n = df_validos[df_validos[col_clave] == '50'].copy()
 
-            # --- 11A: Validar con error de fecha (distingue mismo periodo contable) ---
+            # --- 11A: Validar con error de fecha ---
             sA = pd.merge(df_40n, df_50n, on=[col_banco, 'Abs_Importe', 'Ref_Limpia'], suffixes=('_40', '_50'))
             sA['Dif_Dias'] = (sA['Fecha_Calc_40'] - sA['Fecha_Calc_50']).dt.days.abs()
             sA = sA[sA['Dif_Dias'] > 0].sort_values('Dif_Dias').drop_duplicates('ID_Temp_40').drop_duplicates('ID_Temp_50')
@@ -454,11 +461,11 @@ if archivo_subido is not None:
                 mismo_periodo = (f40.month == f50.month) and (f40.year == f50.year)
 
                 if dif <= tol_dias:
-                    estado_asignado = 'Alerta: Diferencia de Fecha (Mismo Periodo)' if mismo_periodo else 'Alerta: DIFERENTE PERIODO CONTABLE'
+                    estado_asignado = ' Diferencia de Fecha (Mismo Periodo)' if mismo_periodo else ' DIFERENTE PERIODO CONTABLE'
                     txt_estado = "mismo periodo" if mismo_periodo else "¡DIFERENTE MES/AÑO!"
                     com_txt = f"Misma referencia/banco/importe, pero difieren {dif} día(s) ({txt_estado})"
                 elif mismo_periodo:
-                    estado_asignado = 'Alerta: Diferencia de Fecha EXTENDIDA (Mismo Periodo)'
+                    estado_asignado = ' Diferencia de Fecha MAYOR A 3 DIAS (Mismo Periodo)'
                     com_txt = f"Misma referencia/banco/importe, difiere {dif} días (supera tolerancia), pero es del mismo mes"
                 else:
                     continue 
@@ -478,7 +485,7 @@ if archivo_subido is not None:
             sB = sB.drop_duplicates('ID_Temp_40').drop_duplicates('ID_Temp_50')
 
             ind_B = set(sB['ID_Temp_40']) | set(sB['ID_Temp_50'])
-            set_estado(ind_B, 'Alerta: Reclasificación de banco')
+            set_estado(ind_B, ' Reclasificación de banco')
             com_B = {}
             for _, r in sB.iterrows():
                 com_B[r['ID_Temp_40']] = f"Misma referencia/importe/fecha, pero en banco distinto '{r[col_banco+'_50']}'. Doc: {int(r[col_doc+'_50'])}"
@@ -488,7 +495,7 @@ if archivo_subido is not None:
             df_40n = df_40n[~df_40n['ID_Temp'].isin(ind_B)]
             df_50n = df_50n[~df_50n['ID_Temp'].isin(ind_B)]
 
-            # --- 11C: Revisar diferencia de valor ---
+            # --- 11C: Diferencia de valor CON misma referencia ---
             sC = pd.merge(df_40n, df_50n, on=[col_banco, col_fecha, 'Ref_Limpia'], suffixes=('_40', '_50'))
             sC['Dif_Valor'] = (sC['Abs_Importe_40'] - sC['Abs_Importe_50']).abs()
             max_importe = sC[['Abs_Importe_40', 'Abs_Importe_50']].max(axis=1)
@@ -498,12 +505,46 @@ if archivo_subido is not None:
             sC = sC.sort_values('Dif_Valor').drop_duplicates('ID_Temp_40').drop_duplicates('ID_Temp_50')
 
             ind_C = set(sC['ID_Temp_40']) | set(sC['ID_Temp_50'])
-            set_estado(ind_C, 'Alerta: Diferencia de valor')
+            set_estado(ind_C, ' Diferencia de valor')
             com_C = {}
             for _, r in sC.iterrows():
-                com_C[r['ID_Temp_40']] = f"Misma referencia/banco/fecha, con diferencia de ${r['Dif_Valor']:,.0f} ({r['Dif_Pct']*100:.2f}%). Doc: {int(r[col_doc+'_50'])}"
-                com_C[r['ID_Temp_50']] = f"Misma referencia/banco/fecha, con diferencia de ${r['Dif_Valor']:,.0f} ({r['Dif_Pct']*100:.2f}%). Doc: {int(r[col_doc+'_40'])}"
+                com_C[r['ID_Temp_40']] = f"Misma referencia/banco/fecha, diferencia de ${r['Dif_Valor']:,.0f} ({r['Dif_Pct']*100:.2f}%). Doc: {int(r[col_doc+'_50'])}"
+                com_C[r['ID_Temp_50']] = f"Misma referencia/banco/fecha, diferencia de ${r['Dif_Valor']:,.0f} ({r['Dif_Pct']*100:.2f}%). Doc: {int(r[col_doc+'_40'])}"
             set_comentarios(com_C)
+
+            # --- 11D: Diferencia de valor SIN referencia coincidente (Candidato único por proximidad) ---
+            df_pend_11d = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
+            df_pend_11d = df_pend_11d[df_pend_11d[col_clase_doc].astype(str).str.upper() != 'IP']
+            
+            df_40_11d = df_pend_11d[df_pend_11d[col_clave] == '40'].copy()
+            df_50_11d = df_pend_11d[df_pend_11d[col_clave] == '50'].copy()
+
+            if not df_40_11d.empty and not df_50_11d.empty:
+                sD = pd.merge(df_40_11d, df_50_11d, on=[col_banco, col_fecha], suffixes=('_40', '_50'))
+                sD['Dif_Valor'] = (sD['Abs_Importe_40'] - sD['Abs_Importe_50']).abs()
+                max_importeD = sD[['Abs_Importe_40', 'Abs_Importe_50']].max(axis=1)
+                sD['Dif_Pct'] = np.where(max_importeD == 0, 0, sD['Dif_Valor'] / max_importeD)
+
+                sD_tol = sD[(sD['Dif_Valor'] > 0) & ((sD['Dif_Valor'] <= tol_valor_abs) | (sD['Dif_Pct'] <= tol_valor_pct))]
+
+                if not sD_tol.empty:
+                    sD_tol['n40'] = sD_tol.groupby('ID_Temp_40')['ID_Temp_50'].transform('count')
+                    sD_tol['n50'] = sD_tol.groupby('ID_Temp_50')['ID_Temp_40'].transform('count')
+
+                    sD_unicos = sD_tol[(sD_tol['n40'] == 1) & (sD_tol['n50'] == 1)]
+
+                    ind_D = set(sD_unicos['ID_Temp_40']) | set(sD_unicos['ID_Temp_50'])
+                    set_estado(ind_D, ' Diferencia de valor (Sin coincidencia de ref)')
+                    com_D = {}
+                    for _, r in sD_unicos.iterrows():
+                        txt = f"Único candidato en fecha/banco con diferencia de ${r['Dif_Valor']:,.0f} ({r['Dif_Pct']*100:.2f}%)"
+                        com_D[r['ID_Temp_40']] = f"{txt}. Doc: {int(r[col_doc+'_50'])}"
+                        com_D[r['ID_Temp_50']] = f"{txt}. Doc: {int(r[col_doc+'_40'])}"
+                    set_comentarios(com_D)
+                else:
+                    ind_D = set()
+            else:
+                ind_D = set()
 
             # --- Lo que sigue pendiente ---
             sin_pista = df['Estado_Conciliacion'] == 'Pendiente'
@@ -548,7 +589,7 @@ if archivo_subido is not None:
                 return [''] * len(row)
 
             # =========================================================
-            # 15. EXPORTACIÓN CON FILTRO ESPECIAL PARA NOVEDADES
+            # 15. EXPORTACIÓN - FILTRO DE CORREO INTELIGENTE
             # =========================================================
             output = io.BytesIO()
             bancos_unicos = [b for b in df_final[col_banco].unique() if str(b).strip().lower() not in ('', 'nan')]
@@ -571,13 +612,13 @@ if archivo_subido is not None:
                     styled_banco = df_banco.style.apply(resaltar_conciliados, axis=1)
                     styled_banco.to_excel(writer, index=False, sheet_name=nombre_pestana)
 
-                # FILTRO PARA PESTAÑA CORREO: Solo Clave 40, no conciliados exactos.
-                df_novedades = df_final[
-                    (~df_final['Estado_Conciliacion'].str.contains('Conciliado', na=False)) & 
-                    (df_final[col_clave] == '40')
-                ].copy()
-                
+                df_novedades = df_final[~df_final['Estado_Conciliacion'].str.contains('Conciliado', case=False, na=False)].copy()
                 if not df_novedades.empty:
+                    mask_alerta_fuerte = df_novedades['Estado_Conciliacion'].str.contains('Alerta|fuerte', case=False, na=False)
+                    mask_clave_40 = df_novedades[col_clave] == '40'
+                    
+                    df_novedades = df_novedades[mask_alerta_fuerte | mask_clave_40]
+                    
                     df_novedades = df_novedades.sort_values(by=['Estado_Conciliacion', col_importe], ascending=[True, True])
                     styled_novedades = df_novedades.style.apply(resaltar_conciliados, axis=1)
                     styled_novedades.to_excel(writer, index=False, sheet_name='NOVEDADES_Y_ALERTAS')
@@ -588,7 +629,7 @@ if archivo_subido is not None:
             # =========================================================
             # 16. INTERFAZ Y DESCARGA
             # =========================================================
-            st.success("¡Conciliación Integral terminada! Se integró validación de fechas para IP y pestaña de Novedades filtrada.")
+            st.success("¡Conciliación Integral terminada! Alertas mejoradas y filtros de correo configurados.")
 
             if not cuadre_ok:
                 st.warning("⚠️ Alerta de integridad: el total de filas de salida no coincide con el de entrada. Revisa la pestaña DESCARTADAS.")
@@ -596,7 +637,7 @@ if archivo_subido is not None:
             conciliados_exactos = len(ind_r1) + len(ind_r1b) + len(ind_r1d) + len(ind_1c_ipcb)
             conciliados_unicos = len(ind_r2)
             fuerte = len(ind_r1d_fuerte) + len(ind_r2d)
-            alertas = len(ind_r1d_amb) + len(ind_amb) + len(ind_A) + len(ind_B) + len(ind_C)
+            alertas = len(ind_r1d_amb) + len(ind_amb) + len(ind_A) + len(ind_B) + len(ind_C) + len(ind_D)
             pendientes_sin_pista = len(df_final) - conciliados_exactos - conciliados_unicos - fuerte - alertas
 
             col1, col2, col3, col4, col5, col6 = st.columns(6)
