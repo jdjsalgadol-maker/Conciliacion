@@ -135,6 +135,36 @@ if archivo_subido is not None:
             df['Estado_Conciliacion'] = 'Pendiente'
             df['Comentario'] = ''
 
+            # --- NUEVO: 4B. CLASIFICACIÓN DE DISTRIBUIDORAS (CLAVE 40) ---
+            def clasificar_distribuidora(texto):
+                if pd.isna(texto):
+                    return 'Sin clasificar'
+                
+                texto_str = str(texto).upper()
+                
+                # Búsqueda por código explícito
+                if 'D502' in texto_str: return 'Dist Buga'
+                if 'D503' in texto_str: return 'Dist Acopi'
+                if 'D504' in texto_str: return 'Dist Dosquebradas'
+                if 'D505' in texto_str: return 'Dist Pasto'
+                
+                # Búsqueda por rangos numéricos de 4 dígitos
+                numeros = re.findall(r'\b\d{4}\b', texto_str)
+                for n in numeros:
+                    num = int(n)
+                    if 2000 <= num <= 2999: return 'Dist Buga'
+                    if 3000 <= num <= 3999: return 'Dist Acopi'
+                    if 4000 <= num <= 4999: return 'Dist Dosquebradas'
+                    if 6000 <= num <= 6999: return 'Dist Pasto'
+                    
+                return 'Sin clasificar'
+
+            df['Distribuidora'] = 'N/A'
+            if col_texto is not None:
+                mask_40 = df[col_clave] == '40'
+                df.loc[mask_40, 'Distribuidora'] = df.loc[mask_40, col_texto].apply(clasificar_distribuidora)
+            # -----------------------------------------------------------
+
             def set_estado(indices, estado):
                 df.loc[df['ID_Temp'].isin(indices), 'Estado_Conciliacion'] = estado
 
@@ -154,7 +184,6 @@ if archivo_subido is not None:
             # =========================================================
             # 5. NIVEL 1A — CRUCE EXACTO POR REFERENCIA (100% seguro)
             # =========================================================
-            # Se usa 'Turno' para evitar el producto cartesiano en memoria
             df_40['Turno'] = df_40.groupby([col_banco, 'Abs_Importe', col_fecha, col_referencia]).cumcount()
             df_50['Turno'] = df_50.groupby([col_banco, 'Abs_Importe', col_fecha, col_referencia]).cumcount()
             
@@ -190,7 +219,6 @@ if archivo_subido is not None:
             d40b = df_p0[df_p0[col_clave] == '40'].drop(columns=['Ref_limpia'])
             d50b = df_p0[df_p0[col_clave] == '50'].drop(columns=['Asig_limpia'])
             
-            # Se usa 'Turno_b' por eficiencia de memoria en la nube
             d40b['Turno_b'] = d40b.groupby([col_banco, 'Abs_Importe', col_fecha, 'Asig_limpia']).cumcount()
             d50b['Turno_b'] = d50b.groupby([col_banco, 'Abs_Importe', col_fecha, 'Ref_limpia']).cumcount()
             
