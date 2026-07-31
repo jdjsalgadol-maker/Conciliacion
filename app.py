@@ -443,11 +443,11 @@ if archivo_subido is not None:
                 mismo_periodo = (f40.month == f50.month) and (f40.year == f50.year)
 
                 if dif <= tol_dias:
-                    estado = 'Alerta de fecha (Mismo Periodo)' if mismo_periodo else 'Alerta de fecha (DIFERENTE PERIODO)'
+                    estado = 'Diferencia Fecha (Mismo Periodo)' if mismo_periodo else 'Diferencia Fecha (DIFERENTE PERIODO)'
                 elif mismo_periodo:
-                    estado = 'Alerta de fecha EXTENDIDA (Mismo Periodo)'
+                    estado = 'Diferencia Fecha EXTENDIDA (Mismo Periodo)'
                 else:
-                    estado = 'Alerta de fecha (DIFERENTE PERIODO fuera de tolerancia)'
+                    estado = 'Diferencia Fecha (DIFERENTE PERIODO fuera de tolerancia)'
 
                 ids = [r['ID_Temp_40'], r['ID_Temp_50']]
                 ind_A.update(ids)
