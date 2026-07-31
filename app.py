@@ -377,66 +377,44 @@ if archivo_subido is not None:
             set_comentarios(com_r2)
 
             # =========================================================
-            # Desempate Grupo Cerrado (FIFO y Ambiguos)
-            # FIX CRÍTICO: antes solo se procesaban grupos donde AMBOS lados
-            # tenían más de 1 candidato (n40>1 Y n50>1). Eso dejaba huérfano
-            # el caso 2-contra-1 (ej. dos débitos NEQUI con el MISMO importe
-            # exacto compitiendo por un único crédito): como el crédito tenía
-            # n50==1, quedaba excluido de este desempate sin ninguna alerta,
-            # y caía al Nivel 3D (tolerancia de valor SIN referencia) — una
-            # red mucho más débil que podía emparejarlo con un candidato PEOR
-            # (con diferencia de $) en vez de con el candidato exacto
-            # disponible. Ahora se procesan TODOS los grupos pendientes
-            # restantes, sin exigir que ambos lados tengan más de 1 candidato.
-            #
-            # REGLA DE NEGOCIO "NEQUI": cuando el lado débito de un grupo de
-            # importe EXACTO (banco+fecha+importe) está etiquetado 'NEQUI' en
-            # Asignación, se desempata por FIFO (Nº de documento ascendente),
-            # igual que ya se hacía para valores redondos. Si las cantidades
-            # no coinciden 1 a 1, se emparejan los primeros min(n40, n50) por
-            # orden de documento y el resto queda marcado como excedente sin
-            # pareja, para que no se pierda de vista.
+            # Desempate Grupo Cerrado (FIFO y Ambiguos) - CORREGIDO
             # =========================================================
-            pend40 = df_p40[~df_p40['ID_Temp'].isin(ind_r2)]
-            pend50 = df_p50[~df_p50['ID_Temp'].isin(ind_r2)]
+            # Enfrentamos TODOS los pendientes que no se cruzaron en cruce único
+            rem40 = df_p40[~df_p40['ID_Temp'].isin(ind_r2)]
+            rem50 = df_p50[~df_p50['ID_Temp'].isin(ind_r2)]
 
             ind_r2d = set(); com_r2d = {}
             ind_amb = set(); com_amb = {}
 
-            for grp, sub40 in pend40.groupby(grp_c):
+            for grp, sub40 in rem40.groupby(grp_c):
                 b, imp, f = grp
-                sub50 = pend50[(pend50[col_banco] == b) & (pend50['Abs_Importe'] == imp) & (pend50[col_fecha] == f)]
+                sub50 = rem50[(rem50[col_banco] == b) & (rem50['Abs_Importe'] == imp) & (rem50[col_fecha] == f)]
+                
+                # Si no hay contrapartida, pasamos a la siguiente
                 if sub50.empty:
                     continue
 
-                s40_ord, s50_ord = sub40.sort_values(col_doc), sub50.sort_values(col_doc)
-                es_nequi = s40_ord[col_asignacion].astype(str).str.upper().eq('NEQUI').all()
-                es_redondo = es_valor_redondo(imp)
-
-                if es_nequi or es_redondo:
-                    n_parejas = min(len(s40_ord), len(s50_ord))
-                    motivo = "Regla NEQUI (mismo importe exacto)" if es_nequi else f"Valor redondo (${imp:,.0f})"
-                    for i in range(n_parejas):
-                        r40, r50 = s40_ord.iloc[i], s50_ord.iloc[i]
-                        ind_r2d.update([r40['ID_Temp'], r50['ID_Temp']])
-                        com_r2d[r40['ID_Temp']] = f"{motivo} - FIFO (VERIFICAR). Doc: {int(r50[col_doc])}"
-                        com_r2d[r50['ID_Temp']] = f"{motivo} - FIFO (VERIFICAR). Doc: {int(r40[col_doc])}"
-
-                    if len(s40_ord) > n_parejas:
-                        for _, r in s40_ord.iloc[n_parejas:].iterrows():
-                            ind_amb.add(r['ID_Temp'])
-                            com_amb[r['ID_Temp']] = f"{motivo}: sin pareja disponible tras asignar los {n_parejas} cruce(s) FIFO del grupo"
-                    if len(s50_ord) > n_parejas:
-                        for _, r in s50_ord.iloc[n_parejas:].iterrows():
-                            ind_amb.add(r['ID_Temp'])
-                            com_amb[r['ID_Temp']] = f"{motivo}: sin pareja disponible tras asignar los {n_parejas} cruce(s) FIFO del grupo"
+                # Si es un valor redondo, intentamos emparejamiento FIFO
+                if es_valor_redondo(imp):
+                    s40_ord, s50_ord = sub40.sort_values(col_doc), sub50.sort_values(col_doc)
+                    if len(s40_ord) == len(s50_ord):
+                        for (_, r40), (_, r50) in zip(s40_ord.iterrows(), s50_ord.iterrows()):
+                            ind_r2d.update([r40['ID_Temp'], r50['ID_Temp']])
+                            com_r2d[r40['ID_Temp']] = f"Valor redondo (${imp:,.0f}) FIFO (VERIFICAR). Doc: {int(r50[col_doc])}"
+                            com_r2d[r50['ID_Temp']] = f"Valor redondo (${imp:,.0f}) FIFO (VERIFICAR). Doc: {int(r40[col_doc])}"
+                    else:
+                        for _, r in s40_ord.iterrows():
+                            ind_amb.add(r['ID_Temp']); com_amb[r['ID_Temp']] = f"Ambiguo ({len(s40_ord)} vs {len(s50_ord)}). Créditos: {resumen_docs(sub50)}"
+                        for _, r in s50_ord.iterrows():
+                            ind_amb.add(r['ID_Temp']); com_amb[r['ID_Temp']] = f"Ambiguo ({len(s50_ord)} vs {len(s40_ord)}). Débitos: {resumen_docs(sub40)}"
                 else:
-                    for _, r in s40_ord.iterrows():
-                        ind_amb.add(r['ID_Temp']); com_amb[r['ID_Temp']] = f"{len(s50_ord)} posibles cruces. Docs: {resumen_docs(s50_ord)}"
-                    for _, r in s50_ord.iterrows():
-                        ind_amb.add(r['ID_Temp']); com_amb[r['ID_Temp']] = f"{len(s40_ord)} posibles cruces. Docs: {resumen_docs(s40_ord)}"
+                    # Si no es redondo pero es ambiguo
+                    for _, r in sub40.iterrows():
+                        ind_amb.add(r['ID_Temp']); com_amb[r['ID_Temp']] = f"{len(sub50)} posibles cruces. Docs: {resumen_docs(sub50)}"
+                    for _, r in sub50.iterrows():
+                        ind_amb.add(r['ID_Temp']); com_amb[r['ID_Temp']] = f"{len(sub40)} posibles cruces. Docs: {resumen_docs(sub40)}"
 
-            set_estado(ind_r2d, 'Sugerencia fuerte: Regla NEQUI / valor redondo (FIFO)')
+            set_estado(ind_r2d, 'Sugerencia fuerte: FIFO')
             set_comentarios(com_r2d)
             set_estado(ind_amb, 'Sugerencia: Solicitar soporte')
             set_comentarios(com_amb)
