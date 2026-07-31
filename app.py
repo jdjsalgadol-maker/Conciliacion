@@ -445,7 +445,7 @@ if archivo_subido is not None:
                 if dif <= tol_dias:
                     estado = 'Diferencia Fecha (Mismo Periodo)' if mismo_periodo else 'Diferencia Fecha (DIFERENTE PERIODO)'
                 elif mismo_periodo:
-                    estado = 'Mayor a 3 dias(Mismo Periodo)'
+                    estado = 'Diferencia Fecha (Mismo Periodo)'
                 else:
                     estado = 'Diferencia Fecha (Mes no corresponde)'
 
