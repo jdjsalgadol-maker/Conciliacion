@@ -537,9 +537,9 @@ if archivo_subido is not None:
                 est = str(row['Estado_Conciliacion']).lower()
 
                 if 'cruce exacto' in est or 'cruce múltiple' in est or 'cruce unico' in est or 'sectorización' in est and 'candidato' in est:
-                    return ['background-color: #D4EFDF; color: black'] * len(row)
+                    return ['background-color: #C5D9F1; color: black'] * len(row)
                 elif 'cruce por sectorización' in est:
-                    return ['background-color: #D4EFDF; color: black'] * len(row)
+                    return ['background-color: #C5D9F1; color: black'] * len(row)
                 elif 'fifo' in est or 'múltiples' in est or 'multiples' in est or 'sectorización' in est:
                     return ['background-color: #FFF2CC; color: black'] * len(row)
                 elif 'fecha' in est or 'periodo' in est:
