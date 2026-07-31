@@ -355,7 +355,7 @@ if archivo_subido is not None:
             set_comentarios(com_r1d)
             set_estado(ind_r1d_f, 'Sugerencia fuerte: Sectorización (FIFO)')
             set_comentarios(com_r1d_f)
-            set_estado(ind_r1d_a, 'Sugerencia: Sectorización (Múltiples)')
+            set_estado(ind_r1d_a, 'Sugerencia: Sugerencia por Distribuidora Multiples')
             set_comentarios(com_r1d_a)
 
             # Cruce Único sin referencia
@@ -410,9 +410,9 @@ if archivo_subido is not None:
                     for _, r in sub50.iterrows():
                         ind_amb.add(r['ID_Temp']); com_amb[r['ID_Temp']] = f"{len(sub40)} posibles cruces. Docs: {resumen_docs(sub40)}"
 
-            set_estado(ind_r2d, 'Sugerencia fuerte: Emparejado por FIFO')
+            set_estado(ind_r2d, 'Sugerencia fuerte:')
             set_comentarios(com_r2d)
-            set_estado(ind_amb, 'Sugerencia: Múltiples candidatos')
+            set_estado(ind_amb, 'Sugerencia: Multiples partidas')
             set_comentarios(com_amb)
 
             # =========================================================
