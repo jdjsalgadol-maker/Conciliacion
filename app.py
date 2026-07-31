@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -78,6 +79,7 @@ if archivo_subido is not None:
                 "1120055101": "BANCO DE OCCIDENTE", "1120055301": "BANCO GNB SUDAMERIS",
             }
 
+            # FIX: current_bank debe persistir ENTRE filas (estado acumulado), no reiniciarse en cada iteración
             bancos_completados = []
             current_bank = None
             for _, row in df.iterrows():
@@ -193,6 +195,10 @@ if archivo_subido is not None:
                     if num in mapeo_datafono_ref.values(): return num
                 return None
 
+            # FIX CRÍTICO: clasificar TODAS las filas (40 y 50), no solo clave==40.
+            # En el original, las filas '50' quedaban con 'N/A' y por eso NUNCA
+            # coincidían con la Distribuidora calculada en '40' -> la sectorización
+            # completa (Nivel 2) quedaba rota (sub50 siempre vacío).
             df['Distribuidora'] = df.apply(clasificar_distribuidora, axis=1)
 
             # =========================================================
@@ -298,6 +304,9 @@ if archivo_subido is not None:
 
             # =========================================================
             # NIVEL 2: SUGERENCIAS MÚLTIPLES Y SECTORIZACIÓN (BLINDAJE IP)
+            # FIX: la sectorización ahora usa un estado PROPIO ("Conciliado -
+            # Cruce por Sectorización") en vez de reutilizar 'Cruce unico', para
+            # no mezclar evidencia media con evidencia fuerte bajo el mismo color.
             # =========================================================
             df_p1d = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
             if usar_ipcb:
@@ -338,6 +347,7 @@ if archivo_subido is not None:
                             ind_r1d_a.add(r['ID_Temp'])
                             com_r1d_a[r['ID_Temp']] = f"Sede '{dist}' desbalance ({len(s50_ord)} vs {len(s40_ord)}). Débitos: {resumen_docs(s40_ord)}"
 
+            # FIX: estado propio para sectorización con candidato único (ya no "Cruce unico")
             set_estado(ind_r1d, 'Conciliado - Cruce Distribuidora')
             set_comentarios(com_r1d)
             set_estado(ind_r1d_f, 'Sugerencia fuerte: Sectorización (FIFO)')
@@ -368,6 +378,24 @@ if archivo_subido is not None:
 
             # =========================================================
             # Desempate Grupo Cerrado (FIFO y Ambiguos)
+            # FIX CRÍTICO: antes solo se procesaban grupos donde AMBOS lados
+            # tenían más de 1 candidato (n40>1 Y n50>1). Eso dejaba huérfano
+            # el caso 2-contra-1 (ej. dos débitos NEQUI con el MISMO importe
+            # exacto compitiendo por un único crédito): como el crédito tenía
+            # n50==1, quedaba excluido de este desempate sin ninguna alerta,
+            # y caía al Nivel 3D (tolerancia de valor SIN referencia) — una
+            # red mucho más débil que podía emparejarlo con un candidato PEOR
+            # (con diferencia de $) en vez de con el candidato exacto
+            # disponible. Ahora se procesan TODOS los grupos pendientes
+            # restantes, sin exigir que ambos lados tengan más de 1 candidato.
+            #
+            # REGLA DE NEGOCIO "NEQUI": cuando el lado débito de un grupo de
+            # importe EXACTO (banco+fecha+importe) está etiquetado 'NEQUI' en
+            # Asignación, se desempata por FIFO (Nº de documento ascendente),
+            # igual que ya se hacía para valores redondos. Si las cantidades
+            # no coinciden 1 a 1, se emparejan los primeros min(n40, n50) por
+            # orden de documento y el resto queda marcado como excedente sin
+            # pareja, para que no se pierda de vista.
             # =========================================================
             pend40 = df_p40[~df_p40['ID_Temp'].isin(ind_r2)]
             pend50 = df_p50[~df_p50['ID_Temp'].isin(ind_r2)]
@@ -415,6 +443,8 @@ if archivo_subido is not None:
 
             # =========================================================
             # NIVEL 3: ALERTAS DE FECHA, BANCO Y VALOR
+            # FIX: se excluyen referencias '0'/'nan'/'none'/'/' como en v5,
+            # para no generar cruces espurios sobre referencias vacías.
             # =========================================================
             df_pend = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
             df_pend['Regex'] = df_pend[col_referencia].astype(str).str.extract(r'(\d+)')[0]
@@ -424,6 +454,10 @@ if archivo_subido is not None:
             df_5n = df_v[df_v[col_clave] == '50'].copy()
 
             # 3A: Alertas de Fecha
+            # FIX CRÍTICO: se compara año Y mes (antes solo mes, lo que confundía
+            # ene-2025 con ene-2026 como "mismo periodo"). Además se conservan
+            # las 3 categorías de v5: dentro de tolerancia, extendida (mismo mes)
+            # y diferente periodo contable (antes esta última se perdía).
             sA = pd.merge(df_4n, df_5n, on=[col_banco, 'Abs_Importe', 'Regex'], suffixes=('_40', '_50'))
             sA['Dif'] = (sA['Fecha_Calc_40'] - sA['Fecha_Calc_50']).dt.days.abs()
             sA = sA[sA['Dif'] > 0].sort_values('Dif').drop_duplicates('ID_Temp_40').drop_duplicates('ID_Temp_50')
@@ -493,10 +527,7 @@ if archivo_subido is not None:
                 sD['DifV'] = (sD['Abs_Importe_40'] - sD['Abs_Importe_50']).abs()
                 max_impD = sD[['Abs_Importe_40', 'Abs_Importe_50']].max(axis=1)
                 sD['Pct'] = np.where(max_impD == 0, 0, sD['DifV'] / max_impD)
-                
-                # CORRECCIÓN AQUÍ: Permitir DifV >= 0
-                sDt = sD[(sD['DifV'] >= 0) & ((sD['DifV'] <= tol_valor_abs) | (sD['Pct'] <= tol_valor_pct))].copy()
-                
+                sDt = sD[(sD['DifV'] > 0) & ((sD['DifV'] <= tol_valor_abs) | (sD['Pct'] <= tol_valor_pct))].copy()
                 if not sDt.empty:
                     sDt['n4'] = sDt.groupby('ID_Temp_40')['ID_Temp_50'].transform('count')
                     sDt['n5'] = sDt.groupby('ID_Temp_50')['ID_Temp_40'].transform('count')
@@ -546,7 +577,7 @@ if archivo_subido is not None:
 
                 return [''] * len(row)
 
-            # =========================================================
+         # =========================================================
             # EXPORTACIÓN
             # =========================================================
             output = io.BytesIO()
@@ -578,7 +609,6 @@ if archivo_subido is not None:
                 # 4. Descartadas
                 if not filas_descartadas.empty:
                     filas_descartadas.to_excel(writer, index=False, sheet_name='DESCARTADAS_SIN_DOC_O_CT')
-                    
             # =========================================================
             # INTERFAZ
             # =========================================================
