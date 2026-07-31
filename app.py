@@ -20,9 +20,7 @@ st.markdown(hide_style, unsafe_allow_html=True)
 
 st.title("🏦 Conciliación Integral Multibanco 🤖")
 st.write(
-    "Sube tu archivo consolidado. El sistema procesará el cruce multibanco y exportará un archivo "
-    "donde la primera pestaña contendrá exclusivamente las Novedades y Pendientes (Clave 40), seguido "
-    "de las pestañas por banco en el orden contable estricto solicitado."
+    "Sube tu archivo consolidado."
 )
 
 with st.expander("⚙️ Parámetros de tolerancia para sugerencias (alertas)"):
@@ -73,17 +71,11 @@ if archivo_subido is not None:
             # 2. AUTOCOMPLETADO DE BANCOS (Cuentas de Mayor)
             # =========================================================
             mapeo_cuentas_banco = {
-                "1110056001": "CUENTA 1110056001", # Nueva agregada al inicio de secuencia
-                "1110056101": "BANCO DE BOGOTA",
-                "1110056201": "BANCO DAVIBANK S.A.",
-                "1110056301": "BANCOLOMBIA S.A.",
-                "1110056401": "BANCO CAJA SOCIAL S.",
-                "1110056501": "BANCO DAVIVIENDA S.A",
-                "1110056601": "BANCO BILBAO VIZCAYA",
-                "1110056701": "BANCO AGRARIO DE COL",
-                "1120055001": "BANCO COMERCIAL AV V",
-                "1120055101": "BANCO DE OCCIDENTE",
-                "1120055301": "BANCO GNB SUDAMERIS",
+                "1110056101": "BANCO DE BOGOTA", "1110056201": "BANCO DAVIBANK S.A.",
+                "1110056301": "BANCOLOMBIA S.A.", "1110056401": "BANCO CAJA SOCIAL S.",
+                "1110056501": "BANCO DAVIVIENDA S.A", "1110056601": "BANCO BILBAO VIZCAYA",
+                "1110056701": "BANCO AGRARIO DE COL", "1120055001": "BANCO COMERCIAL AV V",
+                "1120055101": "BANCO DE OCCIDENTE", "1120055301": "BANCO GNB SUDAMERIS",
             }
 
             bancos_completados = []
@@ -374,38 +366,49 @@ if archivo_subido is not None:
                 com_r2[r['ID_Temp_50']] = f"Único sin referencia. Doc: {int(r[col_doc + '_40'])}"
             set_comentarios(com_r2)
 
+            # =========================================================
             # Desempate Grupo Cerrado (FIFO y Ambiguos)
-            amb40 = df_p40[(df_p40['n40'] > 1) & (~df_p40['ID_Temp'].isin(ind_r2))]
-            amb50 = df_p50[(df_p50['n50'] > 1) & (~df_p50['ID_Temp'].isin(ind_r2))]
+            # =========================================================
+            pend40 = df_p40[~df_p40['ID_Temp'].isin(ind_r2)]
+            pend50 = df_p50[~df_p50['ID_Temp'].isin(ind_r2)]
 
             ind_r2d = set(); com_r2d = {}
             ind_amb = set(); com_amb = {}
 
-            for grp, sub40 in amb40.groupby(grp_c):
+            for grp, sub40 in pend40.groupby(grp_c):
                 b, imp, f = grp
-                sub50 = amb50[(amb50[col_banco] == b) & (amb50['Abs_Importe'] == imp) & (amb50[col_fecha] == f)]
+                sub50 = pend50[(pend50[col_banco] == b) & (pend50['Abs_Importe'] == imp) & (pend50[col_fecha] == f)]
                 if sub50.empty:
                     continue
 
-                if es_valor_redondo(imp):
-                    s40_ord, s50_ord = sub40.sort_values(col_doc), sub50.sort_values(col_doc)
-                    if len(s40_ord) == len(s50_ord):
-                        for (_, r40), (_, r50) in zip(s40_ord.iterrows(), s50_ord.iterrows()):
-                            ind_r2d.update([r40['ID_Temp'], r50['ID_Temp']])
-                            com_r2d[r40['ID_Temp']] = f"Valor redondo (${imp:,.0f}) FIFO (VERIFICAR). Doc: {int(r50[col_doc])}"
-                            com_r2d[r50['ID_Temp']] = f"Valor redondo (${imp:,.0f}) FIFO (VERIFICAR). Doc: {int(r40[col_doc])}"
-                    else:
-                        for _, r in s40_ord.iterrows():
-                            ind_amb.add(r['ID_Temp']); com_amb[r['ID_Temp']] = f"Ambiguo ({len(s40_ord)} vs {len(s50_ord)}). Créditos: {resumen_docs(s50_ord)}"
-                        for _, r in s50_ord.iterrows():
-                            ind_amb.add(r['ID_Temp']); com_amb[r['ID_Temp']] = f"Ambiguo ({len(s50_ord)} vs {len(s40_ord)}). Débitos: {resumen_docs(s40_ord)}"
-                else:
-                    for _, r in sub40.iterrows():
-                        ind_amb.add(r['ID_Temp']); com_amb[r['ID_Temp']] = f"{len(sub50)} posibles cruces. Docs: {resumen_docs(sub50)}"
-                    for _, r in sub50.iterrows():
-                        ind_amb.add(r['ID_Temp']); com_amb[r['ID_Temp']] = f"{len(sub40)} posibles cruces. Docs: {resumen_docs(sub40)}"
+                s40_ord, s50_ord = sub40.sort_values(col_doc), sub50.sort_values(col_doc)
+                es_nequi = s40_ord[col_asignacion].astype(str).str.upper().eq('NEQUI').all()
+                es_redondo = es_valor_redondo(imp)
 
-            set_estado(ind_r2d, 'Sugerencia fuerte:')
+                if es_nequi or es_redondo:
+                    n_parejas = min(len(s40_ord), len(s50_ord))
+                    motivo = "Regla NEQUI (mismo importe exacto)" if es_nequi else f"Valor redondo (${imp:,.0f})"
+                    for i in range(n_parejas):
+                        r40, r50 = s40_ord.iloc[i], s50_ord.iloc[i]
+                        ind_r2d.update([r40['ID_Temp'], r50['ID_Temp']])
+                        com_r2d[r40['ID_Temp']] = f"{motivo} - FIFO (VERIFICAR). Doc: {int(r50[col_doc])}"
+                        com_r2d[r50['ID_Temp']] = f"{motivo} - FIFO (VERIFICAR). Doc: {int(r40[col_doc])}"
+
+                    if len(s40_ord) > n_parejas:
+                        for _, r in s40_ord.iloc[n_parejas:].iterrows():
+                            ind_amb.add(r['ID_Temp'])
+                            com_amb[r['ID_Temp']] = f"{motivo}: sin pareja disponible tras asignar los {n_parejas} cruce(s) FIFO del grupo"
+                    if len(s50_ord) > n_parejas:
+                        for _, r in s50_ord.iloc[n_parejas:].iterrows():
+                            ind_amb.add(r['ID_Temp'])
+                            com_amb[r['ID_Temp']] = f"{motivo}: sin pareja disponible tras asignar los {n_parejas} cruce(s) FIFO del grupo"
+                else:
+                    for _, r in s40_ord.iterrows():
+                        ind_amb.add(r['ID_Temp']); com_amb[r['ID_Temp']] = f"{len(s50_ord)} posibles cruces. Docs: {resumen_docs(s50_ord)}"
+                    for _, r in s50_ord.iterrows():
+                        ind_amb.add(r['ID_Temp']); com_amb[r['ID_Temp']] = f"{len(s40_ord)} posibles cruces. Docs: {resumen_docs(s40_ord)}"
+
+            set_estado(ind_r2d, 'Sugerencia fuerte: Regla NEQUI / valor redondo (FIFO)')
             set_comentarios(com_r2d)
             set_estado(ind_amb, 'Sugerencia: Solicitar soporte')
             set_comentarios(com_amb)
@@ -490,7 +493,10 @@ if archivo_subido is not None:
                 sD['DifV'] = (sD['Abs_Importe_40'] - sD['Abs_Importe_50']).abs()
                 max_impD = sD[['Abs_Importe_40', 'Abs_Importe_50']].max(axis=1)
                 sD['Pct'] = np.where(max_impD == 0, 0, sD['DifV'] / max_impD)
-                sDt = sD[(sD['DifV'] > 0) & ((sD['DifV'] <= tol_valor_abs) | (sD['Pct'] <= tol_valor_pct))].copy()
+                
+                # CORRECCIÓN AQUÍ: Permitir DifV >= 0
+                sDt = sD[(sD['DifV'] >= 0) & ((sD['DifV'] <= tol_valor_abs) | (sD['Pct'] <= tol_valor_pct))].copy()
+                
                 if not sDt.empty:
                     sDt['n4'] = sDt.groupby('ID_Temp_40')['ID_Temp_50'].transform('count')
                     sDt['n5'] = sDt.groupby('ID_Temp_50')['ID_Temp_40'].transform('count')
@@ -546,46 +552,13 @@ if archivo_subido is not None:
             output = io.BytesIO()
             b_unicos = [b for b in df_final[col_banco].unique() if str(b).strip().lower() not in ('', 'nan')]
 
-            # Definir el orden estricto solicitado
-            orden_cuentas = [
-                "1110056001", "1110056101", "1110056201", "1110056301",
-                "1110056401", "1110056501", "1110056601", "1110056701",
-                "1120055001", "1120055101", "1120055301"
-            ]
-            # Extraer los nombres de banco correspondientes al orden
-            nombres_ordenados = [mapeo_cuentas_banco.get(c, f"CUENTA {c} (sin mapear)") for c in orden_cuentas]
-
-            # Función para ordenar los bancos encontrados según la lista
-            def get_bank_order(banco_str):
-                banco_str = str(banco_str).strip()
-                if banco_str in nombres_ordenados:
-                    return nombres_ordenados.index(banco_str)
-                # Si el banco no está explícitamente nombrado pero contiene la cuenta
-                for i, acc in enumerate(orden_cuentas):
-                    if acc in banco_str:
-                        return i
-                return 999 # Bancos no listados se envían al final
-
-            # Ordenar la lista de bancos únicos
-            b_unicos = sorted(b_unicos, key=get_bank_order)
-
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                
-                # 1. Pestaña de Novedades y Pendientes SOLO Clave 40 (Reemplaza a Resumen)
-                # Filtramos todos los documentos que NO han conciliado de forma exacta/segura
-                df_nov = df_final[~df_final['Estado_Conciliacion'].str.contains('Conciliado|exacto|unico|múltiple|Sectorización', case=False, na=False)].copy()
-                
-                # Dejamos ÚNICAMENTE los registros de la empresa (Clave 40)
-                df_nov = df_nov[df_nov[col_clave] == '40']
-                
-                if not df_nov.empty:
-                    df_nov = df_nov.sort_values(by=['Estado_Conciliacion', col_importe])
-                    df_nov.style.apply(resaltar_conciliados, axis=1).to_excel(writer, index=False, sheet_name='NOVEDADES_Y_PENDIENTES_40')
-                else:
-                    # En caso de no haber novedades, generar la pestaña en blanco
-                    pd.DataFrame(columns=df_final.columns).to_excel(writer, index=False, sheet_name='NOVEDADES_Y_PENDIENTES_40')
+                # 1. Pestaña de Resumen
+                res = df_final['Estado_Conciliacion'].value_counts().reset_index()
+                res.columns = ['Estado', 'Cantidad de registros']
+                res.to_excel(writer, index=False, sheet_name='RESUMEN')
 
-                # 2. Pestañas por Banco en Orden Secuencial
+                # 2. Pestañas por Banco
                 for banco in b_unicos:
                     df_b = df_final[df_final[col_banco] == banco].copy().sort_values(by=col_importe, ascending=True)
                     n_pestana = re.sub(r'[\\/*?:\[\]]', '-', str(banco)[:31])
@@ -593,19 +566,28 @@ if archivo_subido is not None:
                         n_pestana = "Sin_Banco"
                     df_b.style.apply(resaltar_conciliados, axis=1).to_excel(writer, index=False, sheet_name=n_pestana)
 
-                # 3. Descartadas
+                # 3. Pestaña de Novedades y Alertas (¡Corregido!)
+                # Filtramos excluyendo los que SÍ cruzaron exitosamente
+                df_nov = df_final[~df_final['Estado_Conciliacion'].str.contains('Conciliado|exacto|unico|múltiple|Sectorización', case=False, na=False)].copy()
+                
+                if not df_nov.empty:
+                    # Quitamos el filtro restrictivo de m_40 para NO dejar por fuera los registros 50 pendientes
+                    df_nov = df_nov.sort_values(by=['Estado_Conciliacion', col_importe])
+                    df_nov.style.apply(resaltar_conciliados, axis=1).to_excel(writer, index=False, sheet_name='NOVEDADES_Y_ALERTAS')
+
+                # 4. Descartadas
                 if not filas_descartadas.empty:
                     filas_descartadas.to_excel(writer, index=False, sheet_name='DESCARTADAS_SIN_DOC_O_CT')
-
+                    
             # =========================================================
             # INTERFAZ
             # =========================================================
-            st.success("¡Conciliación Integral terminada! Pestañas ordenadas secuencialmente.")
+            st.success("¡Conciliación Integral terminada!.")
             if not cuadre_ok:
                 st.warning("⚠️ Revisa la pestaña DESCARTADAS, el total de filas no coincide.")
 
             c1, c2, c3, c4, c5 = st.columns(5)
-            c1.metric("Seguras (Azul/Verde)", len(ind_r1 | ind_r1b | ind_1c_ipcb | ind_r2 | ind_r1d))
+            c1.metric("Seguras (Verde)", len(ind_r1 | ind_r1b | ind_1c_ipcb | ind_r2 | ind_r1d))
             c2.metric("Múltiples/FIFO (Amarillo)", len(ind_r1d_f | ind_r1d_a | ind_r2d | ind_amb))
             c3.metric("Reclasificar (Lila)", len(ind_B))
             c4.metric("Diferencias Fe/Val (Durazno/Rojo)", len(ind_A | ind_C | ind_D))
