@@ -73,7 +73,7 @@ if archivo_subido is not None:
             # 2. AUTOCOMPLETADO DE BANCOS (Cuentas de Mayor)
             # =========================================================
             mapeo_cuentas_banco = {
-                "1110056001": "CUENTA 1110056001", # Nueva agregada al inicio de secuencia
+                "1110056001": "CUENTA 1110056001",
                 "1110056101": "BANCO DE BOGOTA",
                 "1110056201": "BANCO DAVIBANK S.A.",
                 "1110056301": "BANCOLOMBIA S.A.",
@@ -374,7 +374,7 @@ if archivo_subido is not None:
                 com_r2[r['ID_Temp_50']] = f"Único sin referencia. Doc: {int(r[col_doc + '_40'])}"
             set_comentarios(com_r2)
 
-# =========================================================
+            # =========================================================
             # Desempate Grupo Cerrado (FIFO y Ambiguos) - CORREGIDO
             # =========================================================
             # Enfrentamos TODOS los pendientes que no se cruzaron en cruce único
@@ -532,7 +532,7 @@ if archivo_subido is not None:
             def resaltar_conciliados(row):
                 est = str(row['Estado_Conciliacion']).lower()
 
-                if 'cruce exacto' in est or 'cruce múltiple' in est or 'cruce unico' in est or 'sectorización' in est and 'candidato' in est:
+                if 'cruce exacto' in est or 'cruce múltiple' in est or 'cruce unico' in est or ('sectorización' in est and 'candidato' in est):
                     return ['background-color: #C5D9F1; color: black'] * len(row)
                 elif 'cruce por sectorización' in est:
                     return ['background-color: #C5D9F1; color: black'] * len(row)
