@@ -21,10 +21,7 @@ st.markdown(hide_style, unsafe_allow_html=True)
 
 st.title("🏦 Conciliación Integral Multibanco 🤖")
 st.write(
-    "Sube tu archivo consolidado. El motor de reglas secuenciales aplica cruces seguros "
-    "(1:1 exacto, M:N datáfonos, limpieza de prefijos) protegiendo la exclusividad de los documentos 'IP'. "
-    "El resultado se semaforiza para tu auditoría. Sectorización y evidencia media NO se mezclan con "
-    "cruces 100% seguros."
+    "Sube tu archivo consolidado."
 )
 
 with st.expander("⚙️ Parámetros de tolerancia para sugerencias (alertas)"):
