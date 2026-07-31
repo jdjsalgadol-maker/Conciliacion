@@ -348,7 +348,7 @@ if archivo_subido is not None:
                             com_r1d_a[r['ID_Temp']] = f"Sede '{dist}' desbalance ({len(s50_ord)} vs {len(s40_ord)}). Débitos: {resumen_docs(s40_ord)}"
 
             # FIX: estado propio para sectorización con candidato único (ya no "Cruce unico")
-            set_estado(ind_r1d, 'Conciliado - Cruce por Sectorización')
+            set_estado(ind_r1d, 'Conciliado - Cruce Distribuidora')
             set_comentarios(com_r1d)
             set_estado(ind_r1d_f, 'Sugerencia fuerte: Sectorización (FIFO)')
             set_comentarios(com_r1d_f)
@@ -409,7 +409,7 @@ if archivo_subido is not None:
 
             set_estado(ind_r2d, 'Sugerencia fuerte:')
             set_comentarios(com_r2d)
-            set_estado(ind_amb, 'Sugerencia: Multiples partidas')
+            set_estado(ind_amb, 'Sugerencia: Solicitar soporte')
             set_comentarios(com_amb)
 
             # =========================================================
@@ -504,7 +504,7 @@ if archivo_subido is not None:
                     sDt['n5'] = sDt.groupby('ID_Temp_50')['ID_Temp_40'].transform('count')
                     sDu = sDt[(sDt['n4'] == 1) & (sDt['n5'] == 1)]
                     ind_D = set(sDu['ID_Temp_40']) | set(sDu['ID_Temp_50'])
-                    set_estado(ind_D, 'Diferencia en valor (Sin ref)')
+                    set_estado(ind_D, 'Diferencia en valor (NEQUI)')
                     com_D = {}
                     for _, r in sDu.iterrows():
                         com_D[r['ID_Temp_40']] = f"Candidato único en fecha/banco con dif. de ${r['DifV']:,.0f}. Doc: {int(r[col_doc+'_50'])}"
@@ -517,7 +517,7 @@ if archivo_subido is not None:
             sin_p = df['Estado_Conciliacion'] == 'Pendiente'
             if usar_ipcb:
                 es_ip = df[col_clase_doc].astype(str).str.upper() == 'IP'
-                df.loc[sin_p & es_ip & (df['Comentario'] == ''), 'Comentario'] = 'Sin coincidencia - IP exclusivo requiere CB correspondiente'
+                df.loc[sin_p & es_ip & (df['Comentario'] == ''), 'Comentario'] = 'Sin coincidencia - PDV'
                 df.loc[sin_p & ~es_ip & (df['Comentario'] == ''), 'Comentario'] = 'Sin coincidencia ni sugerencia encontrada - requiere revisión manual completa'
             else:
                 df.loc[sin_p & (df['Comentario'] == ''), 'Comentario'] = 'Sin coincidencia ni sugerencia encontrada - requiere revisión manual completa'
