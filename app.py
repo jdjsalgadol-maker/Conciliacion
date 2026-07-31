@@ -445,9 +445,9 @@ if archivo_subido is not None:
                 if dif <= tol_dias:
                     estado = 'Diferencia Fecha (Mismo Periodo)' if mismo_periodo else 'Diferencia Fecha (DIFERENTE PERIODO)'
                 elif mismo_periodo:
-                    estado = 'Diferencia Fecha EXTENDIDA (Mismo Periodo)'
+                    estado = 'Mayor a 3 dias(Mismo Periodo)'
                 else:
-                    estado = 'Diferencia Fecha (DIFERENTE PERIODO fuera de tolerancia)'
+                    estado = 'Diferencia Fecha (Mes no corresponde)'
 
                 ids = [r['ID_Temp_40'], r['ID_Temp_50']]
                 ind_A.update(ids)
