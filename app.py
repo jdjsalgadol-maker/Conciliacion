@@ -551,17 +551,19 @@ if archivo_subido is not None:
 
                 return [''] * len(row)
 
-            # =========================================================
+         # =========================================================
             # EXPORTACIÓN
             # =========================================================
             output = io.BytesIO()
             b_unicos = [b for b in df_final[col_banco].unique() if str(b).strip().lower() not in ('', 'nan')]
 
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                # 1. Pestaña de Resumen
                 res = df_final['Estado_Conciliacion'].value_counts().reset_index()
                 res.columns = ['Estado', 'Cantidad de registros']
                 res.to_excel(writer, index=False, sheet_name='RESUMEN')
 
+                # 2. Pestañas por Banco
                 for banco in b_unicos:
                     df_b = df_final[df_final[col_banco] == banco].copy().sort_values(by=col_importe, ascending=True)
                     n_pestana = re.sub(r'[\\/*?:\[\]]', '-', str(banco)[:31])
@@ -569,16 +571,18 @@ if archivo_subido is not None:
                         n_pestana = "Sin_Banco"
                     df_b.style.apply(resaltar_conciliados, axis=1).to_excel(writer, index=False, sheet_name=n_pestana)
 
+                # 3. Pestaña de Novedades y Alertas (¡Corregido!)
+                # Filtramos excluyendo los que SÍ cruzaron exitosamente
                 df_nov = df_final[~df_final['Estado_Conciliacion'].str.contains('Conciliado|exacto|unico|múltiple|Sectorización', case=False, na=False)].copy()
+                
                 if not df_nov.empty:
-                    m_alerta = df_nov['Estado_Conciliacion'].str.contains('fecha|reclasificación|valor|múltiples|fifo', case=False, na=False)
-                    m_40 = df_nov[col_clave] == '40'
-                    df_nov = df_nov[m_alerta | m_40].sort_values(by=['Estado_Conciliacion', col_importe])
+                    # Quitamos el filtro restrictivo de m_40 para NO dejar por fuera los registros 50 pendientes
+                    df_nov = df_nov.sort_values(by=['Estado_Conciliacion', col_importe])
                     df_nov.style.apply(resaltar_conciliados, axis=1).to_excel(writer, index=False, sheet_name='NOVEDADES_Y_ALERTAS')
 
+                # 4. Descartadas
                 if not filas_descartadas.empty:
                     filas_descartadas.to_excel(writer, index=False, sheet_name='DESCARTADAS_SIN_DOC_O_CT')
-
             # =========================================================
             # INTERFAZ
             # =========================================================
