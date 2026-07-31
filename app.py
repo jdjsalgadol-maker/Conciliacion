@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -21,7 +20,9 @@ st.markdown(hide_style, unsafe_allow_html=True)
 
 st.title("🏦 Conciliación Integral Multibanco 🤖")
 st.write(
-    "Sube tu archivo consolidado."
+    "Sube tu archivo consolidado. El sistema procesará el cruce multibanco y exportará un archivo "
+    "donde la primera pestaña contendrá exclusivamente las Novedades y Pendientes (Clave 40), seguido "
+    "de las pestañas por banco en el orden contable estricto solicitado."
 )
 
 with st.expander("⚙️ Parámetros de tolerancia para sugerencias (alertas)"):
@@ -72,14 +73,19 @@ if archivo_subido is not None:
             # 2. AUTOCOMPLETADO DE BANCOS (Cuentas de Mayor)
             # =========================================================
             mapeo_cuentas_banco = {
-                "1110056101": "BANCO DE BOGOTA", "1110056201": "BANCO DAVIBANK S.A.",
-                "1110056301": "BANCOLOMBIA S.A.", "1110056401": "BANCO CAJA SOCIAL S.",
-                "1110056501": "BANCO DAVIVIENDA S.A", "1110056601": "BANCO BILBAO VIZCAYA",
-                "1110056701": "BANCO AGRARIO DE COL", "1120055001": "BANCO COMERCIAL AV V",
-                "1120055101": "BANCO DE OCCIDENTE", "1120055301": "BANCO GNB SUDAMERIS",
+                "1110056001": "CUENTA 1110056001", # Nueva agregada al inicio de secuencia
+                "1110056101": "BANCO DE BOGOTA",
+                "1110056201": "BANCO DAVIBANK S.A.",
+                "1110056301": "BANCOLOMBIA S.A.",
+                "1110056401": "BANCO CAJA SOCIAL S.",
+                "1110056501": "BANCO DAVIVIENDA S.A",
+                "1110056601": "BANCO BILBAO VIZCAYA",
+                "1110056701": "BANCO AGRARIO DE COL",
+                "1120055001": "BANCO COMERCIAL AV V",
+                "1120055101": "BANCO DE OCCIDENTE",
+                "1120055301": "BANCO GNB SUDAMERIS",
             }
 
-            # FIX: current_bank debe persistir ENTRE filas (estado acumulado), no reiniciarse en cada iteración
             bancos_completados = []
             current_bank = None
             for _, row in df.iterrows():
@@ -195,10 +201,6 @@ if archivo_subido is not None:
                     if num in mapeo_datafono_ref.values(): return num
                 return None
 
-            # FIX CRÍTICO: clasificar TODAS las filas (40 y 50), no solo clave==40.
-            # En el original, las filas '50' quedaban con 'N/A' y por eso NUNCA
-            # coincidían con la Distribuidora calculada en '40' -> la sectorización
-            # completa (Nivel 2) quedaba rota (sub50 siempre vacío).
             df['Distribuidora'] = df.apply(clasificar_distribuidora, axis=1)
 
             # =========================================================
@@ -304,9 +306,6 @@ if archivo_subido is not None:
 
             # =========================================================
             # NIVEL 2: SUGERENCIAS MÚLTIPLES Y SECTORIZACIÓN (BLINDAJE IP)
-            # FIX: la sectorización ahora usa un estado PROPIO ("Conciliado -
-            # Cruce por Sectorización") en vez de reutilizar 'Cruce unico', para
-            # no mezclar evidencia media con evidencia fuerte bajo el mismo color.
             # =========================================================
             df_p1d = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
             if usar_ipcb:
@@ -347,7 +346,6 @@ if archivo_subido is not None:
                             ind_r1d_a.add(r['ID_Temp'])
                             com_r1d_a[r['ID_Temp']] = f"Sede '{dist}' desbalance ({len(s50_ord)} vs {len(s40_ord)}). Débitos: {resumen_docs(s40_ord)}"
 
-            # FIX: estado propio para sectorización con candidato único (ya no "Cruce unico")
             set_estado(ind_r1d, 'Conciliado - Cruce Distribuidora')
             set_comentarios(com_r1d)
             set_estado(ind_r1d_f, 'Sugerencia fuerte: Sectorización (FIFO)')
@@ -414,8 +412,6 @@ if archivo_subido is not None:
 
             # =========================================================
             # NIVEL 3: ALERTAS DE FECHA, BANCO Y VALOR
-            # FIX: se excluyen referencias '0'/'nan'/'none'/'/' como en v5,
-            # para no generar cruces espurios sobre referencias vacías.
             # =========================================================
             df_pend = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
             df_pend['Regex'] = df_pend[col_referencia].astype(str).str.extract(r'(\d+)')[0]
@@ -425,10 +421,6 @@ if archivo_subido is not None:
             df_5n = df_v[df_v[col_clave] == '50'].copy()
 
             # 3A: Alertas de Fecha
-            # FIX CRÍTICO: se compara año Y mes (antes solo mes, lo que confundía
-            # ene-2025 con ene-2026 como "mismo periodo"). Además se conservan
-            # las 3 categorías de v5: dentro de tolerancia, extendida (mismo mes)
-            # y diferente periodo contable (antes esta última se perdía).
             sA = pd.merge(df_4n, df_5n, on=[col_banco, 'Abs_Importe', 'Regex'], suffixes=('_40', '_50'))
             sA['Dif'] = (sA['Fecha_Calc_40'] - sA['Fecha_Calc_50']).dt.days.abs()
             sA = sA[sA['Dif'] > 0].sort_values('Dif').drop_duplicates('ID_Temp_40').drop_duplicates('ID_Temp_50')
@@ -548,19 +540,52 @@ if archivo_subido is not None:
 
                 return [''] * len(row)
 
-         # =========================================================
+            # =========================================================
             # EXPORTACIÓN
             # =========================================================
             output = io.BytesIO()
             b_unicos = [b for b in df_final[col_banco].unique() if str(b).strip().lower() not in ('', 'nan')]
 
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                # 1. Pestaña de Resumen
-                res = df_final['Estado_Conciliacion'].value_counts().reset_index()
-                res.columns = ['Estado', 'Cantidad de registros']
-                res.to_excel(writer, index=False, sheet_name='RESUMEN')
+            # Definir el orden estricto solicitado
+            orden_cuentas = [
+                "1110056001", "1110056101", "1110056201", "1110056301",
+                "1110056401", "1110056501", "1110056601", "1110056701",
+                "1120055001", "1120055101", "1120055301"
+            ]
+            # Extraer los nombres de banco correspondientes al orden
+            nombres_ordenados = [mapeo_cuentas_banco.get(c, f"CUENTA {c} (sin mapear)") for c in orden_cuentas]
 
-                # 2. Pestañas por Banco
+            # Función para ordenar los bancos encontrados según la lista
+            def get_bank_order(banco_str):
+                banco_str = str(banco_str).strip()
+                if banco_str in nombres_ordenados:
+                    return nombres_ordenados.index(banco_str)
+                # Si el banco no está explícitamente nombrado pero contiene la cuenta
+                for i, acc in enumerate(orden_cuentas):
+                    if acc in banco_str:
+                        return i
+                return 999 # Bancos no listados se envían al final
+
+            # Ordenar la lista de bancos únicos
+            b_unicos = sorted(b_unicos, key=get_bank_order)
+
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                
+                # 1. Pestaña de Novedades y Pendientes SOLO Clave 40 (Reemplaza a Resumen)
+                # Filtramos todos los documentos que NO han conciliado de forma exacta/segura
+                df_nov = df_final[~df_final['Estado_Conciliacion'].str.contains('Conciliado|exacto|unico|múltiple|Sectorización', case=False, na=False)].copy()
+                
+                # Dejamos ÚNICAMENTE los registros de la empresa (Clave 40)
+                df_nov = df_nov[df_nov[col_clave] == '40']
+                
+                if not df_nov.empty:
+                    df_nov = df_nov.sort_values(by=['Estado_Conciliacion', col_importe])
+                    df_nov.style.apply(resaltar_conciliados, axis=1).to_excel(writer, index=False, sheet_name='NOVEDADES_Y_PENDIENTES_40')
+                else:
+                    # En caso de no haber novedades, generar la pestaña en blanco
+                    pd.DataFrame(columns=df_final.columns).to_excel(writer, index=False, sheet_name='NOVEDADES_Y_PENDIENTES_40')
+
+                # 2. Pestañas por Banco en Orden Secuencial
                 for banco in b_unicos:
                     df_b = df_final[df_final[col_banco] == banco].copy().sort_values(by=col_importe, ascending=True)
                     n_pestana = re.sub(r'[\\/*?:\[\]]', '-', str(banco)[:31])
@@ -568,27 +593,19 @@ if archivo_subido is not None:
                         n_pestana = "Sin_Banco"
                     df_b.style.apply(resaltar_conciliados, axis=1).to_excel(writer, index=False, sheet_name=n_pestana)
 
-                # 3. Pestaña de Novedades y Alertas (¡Corregido!)
-                # Filtramos excluyendo los que SÍ cruzaron exitosamente
-                df_nov = df_final[~df_final['Estado_Conciliacion'].str.contains('Conciliado|exacto|unico|múltiple|Sectorización', case=False, na=False)].copy()
-                
-                if not df_nov.empty:
-                    # Quitamos el filtro restrictivo de m_40 para NO dejar por fuera los registros 50 pendientes
-                    df_nov = df_nov.sort_values(by=['Estado_Conciliacion', col_importe])
-                    df_nov.style.apply(resaltar_conciliados, axis=1).to_excel(writer, index=False, sheet_name='NOVEDADES_Y_ALERTAS')
-
-                # 4. Descartadas
+                # 3. Descartadas
                 if not filas_descartadas.empty:
                     filas_descartadas.to_excel(writer, index=False, sheet_name='DESCARTADAS_SIN_DOC_O_CT')
+
             # =========================================================
             # INTERFAZ
             # =========================================================
-            st.success("¡Conciliación Integral terminada!.")
+            st.success("¡Conciliación Integral terminada! Pestañas ordenadas secuencialmente.")
             if not cuadre_ok:
                 st.warning("⚠️ Revisa la pestaña DESCARTADAS, el total de filas no coincide.")
 
             c1, c2, c3, c4, c5 = st.columns(5)
-            c1.metric("Seguras (Verde)", len(ind_r1 | ind_r1b | ind_1c_ipcb | ind_r2 | ind_r1d))
+            c1.metric("Seguras (Azul/Verde)", len(ind_r1 | ind_r1b | ind_1c_ipcb | ind_r2 | ind_r1d))
             c2.metric("Múltiples/FIFO (Amarillo)", len(ind_r1d_f | ind_r1d_a | ind_r2d | ind_amb))
             c3.metric("Reclasificar (Lila)", len(ind_B))
             c4.metric("Diferencias Fe/Val (Durazno/Rojo)", len(ind_A | ind_C | ind_D))
