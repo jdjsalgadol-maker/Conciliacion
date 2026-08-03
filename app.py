@@ -18,11 +18,9 @@ hide_style = """
 """
 st.markdown(hide_style, unsafe_allow_html=True)
 
-st.title("🏦 Conciliación Integral Multibanco 🤖")
+st.title("🏦 Conciliación Automatizada 🤖")
 st.write(
-    "Sube tu archivo consolidado. El sistema procesará el cruce multibanco y exportará un archivo "
-    "donde la primera pestaña contendrá exclusivamente las Novedades y Pendientes (Clave 40), seguido "
-    "de las pestañas por banco en el orden contable estricto solicitado."
+    "Sube tu archivo consolidado."
 )
 
 with st.expander("⚙️ Parámetros de tolerancia para sugerencias (alertas)"):
@@ -402,9 +400,9 @@ if archivo_subido is not None:
                             com_r2d[r50['ID_Temp']] = f"Valor redondo (${imp:,.0f}) FIFO (VERIFICAR). Doc: {int(r40[col_doc])}"
                     else:
                         for _, r in s40_ord.iterrows():
-                            ind_amb.add(r['ID_Temp']); com_amb[r['ID_Temp']] = f"Ambiguo ({len(s40_ord)} vs {len(s50_ord)}). Créditos: {resumen_docs(sub50)}"
+                            ind_amb.add(r['ID_Temp']); com_amb[r['ID_Temp']] = f"Confiso ({len(s40_ord)} vs {len(s50_ord)}). Créditos: {resumen_docs(sub50)}"
                         for _, r in s50_ord.iterrows():
-                            ind_amb.add(r['ID_Temp']); com_amb[r['ID_Temp']] = f"Ambiguo ({len(s50_ord)} vs {len(s40_ord)}). Débitos: {resumen_docs(sub40)}"
+                            ind_amb.add(r['ID_Temp']); com_amb[r['ID_Temp']] = f"Confiso ({len(s50_ord)} vs {len(s40_ord)}). Débitos: {resumen_docs(sub40)}"
                 else:
                     # Si no es redondo pero es ambiguo
                     for _, r in sub40.iterrows():
@@ -412,7 +410,7 @@ if archivo_subido is not None:
                     for _, r in sub50.iterrows():
                         ind_amb.add(r['ID_Temp']); com_amb[r['ID_Temp']] = f"{len(sub40)} posibles cruces. Docs: {resumen_docs(sub40)}"
 
-            set_estado(ind_r2d, 'Sugerencia fuerte: FIFO')
+            set_estado(ind_r2d, 'Sugerencia fuerte')
             set_comentarios(com_r2d)
             set_estado(ind_amb, 'Sugerencia: Solicitar soporte')
             set_comentarios(com_amb)
@@ -634,7 +632,7 @@ if archivo_subido is not None:
             if filas_excluidas > 0:
                 st.warning(f"⚠️ Se excluyeron {filas_excluidas} filas vacías/totales.")
 
-            st.download_button(label="📥 Descargar Excel con Resultados", data=output.getvalue(), file_name="Conciliacion_Integral_Resultados.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            st.download_button(label="📥 Descargar Excel con Resultados", data=output.getvalue(), file_name="Conciliacion completa.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     except Exception as e:
         st.error(f"Error técnico detectado: {e}")
