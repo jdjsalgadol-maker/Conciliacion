@@ -530,19 +530,32 @@ if archivo_subido is not None:
                 df_final[col_f] = pd.to_datetime(df_final[col_f], errors='coerce').dt.strftime('%d/%m/%Y')
 
             def resaltar_conciliados(row):
-                est = str(row['Estado_Conciliacion']).lower()
+                est = str(row['Estado_Conciliacion']).strip().lower()
 
-                if 'cruce exacto' in est or 'cruce múltiple' in est or 'cruce unico' in est or ('sectorización' in est and 'candidato' in est):
+                # Los pendientes NUNCA se colorean (deben quedar en blanco/sin estilo)
+                if est == 'pendiente' or est == '' or est == 'nan':
+                    return [''] * len(row)
+
+                # 1) AZUL claro: conciliaciones seguras (exacto, único, múltiple, por distribuidora)
+                if ('cruce exacto' in est or 'cruce múltiple' in est or 'cruce unico' in est
+                        or 'cruce único' in est or 'cruce distribuidora' in est):
                     return ['background-color: #C5D9F1; color: black'] * len(row)
-                elif 'cruce por sectorización' in est:
-                    return ['background-color: #C5D9F1; color: black'] * len(row)
-                elif 'fifo' in est or 'múltiples' in est or 'multiples' in est or 'sectorización' in est:
+
+                # 2) AMARILLO claro: sugerencias fuertes / múltiples / FIFO / requieren soporte
+                if ('fifo' in est or 'múltiples' in est or 'multiples' in est
+                        or 'sectorización' in est or 'solicitar soporte' in est):
                     return ['background-color: #FFF2CC; color: black'] * len(row)
-                elif 'fecha' in est or 'periodo' in est:
+
+                # 3) DURAZNO claro: diferencias de fecha / periodo
+                if 'fecha' in est or 'periodo' in est:
                     return ['background-color: #FDEBD0; color: black'] * len(row)
-                elif 'reclasificación' in est or 'otro banco' in est:
+
+                # 4) LILA claro: reclasificación entre bancos
+                if 'reclasificación' in est or 'otro banco' in est:
                     return ['background-color: #D7BDE2; color: black'] * len(row)
-                elif 'valor' in est:
+
+                # 5) ROJO/SALMÓN claro: diferencias de valor
+                if 'valor' in est:
                     return ['background-color: #F5B7B1; color: black'] * len(row)
 
                 return [''] * len(row)
