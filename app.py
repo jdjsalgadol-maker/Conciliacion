@@ -410,7 +410,7 @@ if archivo_subido is not None:
                     for _, r in sub50.iterrows():
                         ind_amb.add(r['ID_Temp']); com_amb[r['ID_Temp']] = f"{len(sub40)} posibles cruces. Docs: {resumen_docs(sub40)}"
 
-            set_estado(ind_r2d, 'Sugerencia fuerte')
+            set_estado(ind_r2d, 'Sugerencia fuerte: Valor redondo (FIFO)')
             set_comentarios(com_r2d)
             set_estado(ind_amb, 'Sugerencia: Solicitar soporte')
             set_comentarios(com_amb)
@@ -541,7 +541,8 @@ if archivo_subido is not None:
 
                 # 2) AMARILLO claro: sugerencias fuertes / múltiples / FIFO / requieren soporte
                 if ('fifo' in est or 'múltiples' in est or 'multiples' in est
-                        or 'sectorización' in est or 'solicitar soporte' in est):
+                        or 'sectorización' in est or 'solicitar soporte' in est
+                        or 'fuerte' in est):
                     return ['background-color: #FFF2CC; color: black'] * len(row)
 
                 # 3) DURAZNO claro: diferencias de fecha / periodo
@@ -591,7 +592,12 @@ if archivo_subido is not None:
                 
                 # 1. Pestaña de Novedades y Pendientes SOLO Clave 40 (Reemplaza a Resumen)
                 # Filtramos todos los documentos que NO han conciliado de forma exacta/segura
-                df_nov = df_final[~df_final['Estado_Conciliacion'].str.contains('Conciliado|exacto|unico|múltiple|Sectorización', case=False, na=False)].copy()
+                # FIX: antes se excluía cualquier estado que contuviera "Sectorización"
+                # (entre otras palabras sueltas), lo que también quitaba de esta pestaña
+                # a 'Sugerencia fuerte: Sectorización (FIFO)' -- que SÍ necesita revisión
+                # manual y no debería desaparecer de Novedades. Ahora solo se excluyen los
+                # estados que de verdad son "Conciliado - ..." (100% seguros).
+                df_nov = df_final[~df_final['Estado_Conciliacion'].str.startswith('Conciliado', na=False)].copy()
                 
                 # Dejamos ÚNICAMENTE los registros de la empresa (Clave 40)
                 df_nov = df_nov[df_nov[col_clave] == '40']
