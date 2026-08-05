@@ -26,141 +26,8 @@ with st.expander("⚙️ Parametros de tolerancia para sugerencias (alertas)"):
     tol_valor_abs = st.number_input("Diferencia absoluta maxima de valor para alertar ($)", min_value=1, value=5000, step=100)
     tol_valor_pct = st.number_input("Diferencia relativa maxima de valor para alertar (%)", min_value=0.01, value=0.5, step=0.01) / 100
     multiplo_redondo = st.selectbox("Multiplo para considerar un valor 'redondo' (alta ambiguedad)", [50000, 100000], index=1)
-    tol_dias_cerrados = st.slider("Dias maximos de diferencia de Fecha valor para valores cerrados repetidos (ej. $3,000,000)", 1, 15, 5)
 
 archivo_subido = st.file_uploader("Selecciona el archivo de Excel o CSV", type=['xlsx', 'csv'])
-
-
-# =========================================================
-# FUNCION: CONCILIACION DE VALORES CERRADOS CON TOLERANCIA DE FECHA
-# =========================================================
-def conciliar_valores_cerrados(
-    df,
-    col_banco,
-    col_importe,
-    col_clave,
-    col_fecha,
-    col_doc,
-    col_estado="Estado_Conciliacion",
-    col_comentario="Comentario",
-    valores_cerrados=None,
-    detectar_multiplos_de=50000,
-    tol_dias_fecha=5,
-    solo_pendientes=True,
-):
-    """
-    Concilia lineas con valores 'cerrados' (redondos o repetidos) que tienen
-    multiples ocurrencias y cuya Fecha valor puede diferir entre el 40 y el 50.
-    Usa emparejamiento FIFO por Banco + Importe absoluto, ordenado por fecha
-    y numero de documento, con tolerancia configurable de dias.
-    """
-    df = df.copy()
-
-    if "Abs_Importe" not in df.columns:
-        df["Abs_Importe"] = df[col_importe].abs()
-    if "Fecha_Calc" not in df.columns:
-        df["Fecha_Calc"] = pd.to_datetime(df[col_fecha], errors="coerce")
-    if "ID_Temp" not in df.columns:
-        df["ID_Temp"] = df.index
-
-    if solo_pendientes and col_estado in df.columns:
-        base = df[df[col_estado] == "Pendiente"].copy()
-    else:
-        base = df.copy()
-
-    if base.empty:
-        return df
-
-    if valores_cerrados:
-        set_valores = set(float(v) for v in valores_cerrados)
-        base_cerrados = base[base["Abs_Importe"].isin(set_valores)].copy()
-    else:
-        base_cerrados = base[
-            (base["Abs_Importe"] > 0)
-            & (base["Abs_Importe"] % detectar_multiplos_de == 0)
-        ].copy()
-
-    if base_cerrados.empty:
-        return df
-
-    resultados_estado = {}
-    resultados_comentario = {}
-
-    for (banco, importe), grupo in base_cerrados.groupby([col_banco, "Abs_Importe"]):
-        lado_40 = grupo[grupo[col_clave] == "40"].copy()
-        lado_50 = grupo[grupo[col_clave] == "50"].copy()
-
-        if lado_40.empty or lado_50.empty:
-            continue
-
-        lado_40 = lado_40.sort_values(by=["Fecha_Calc", col_doc]).reset_index(drop=True)
-        lado_50 = lado_50.sort_values(by=["Fecha_Calc", col_doc]).reset_index(drop=True)
-
-        n_pares = min(len(lado_40), len(lado_50))
-
-        for i in range(n_pares):
-            fila_40 = lado_40.iloc[i]
-            fila_50 = lado_50.iloc[i]
-
-            id_40 = fila_40["ID_Temp"]
-            id_50 = fila_50["ID_Temp"]
-
-            f40 = fila_40["Fecha_Calc"]
-            f50 = fila_50["Fecha_Calc"]
-
-            if pd.isna(f40) or pd.isna(f50):
-                dif_dias = None
-            else:
-                dif_dias = abs((f40 - f50).days)
-
-            doc_40 = fila_40[col_doc]
-            doc_50 = fila_50[col_doc]
-
-            if dif_dias is None:
-                estado = "Sugerencia - Valor cerrado (fecha invalida, verificar)"
-                detalle_dif = "fecha no disponible"
-            elif dif_dias == 0:
-                estado = "Conciliado - Valor cerrado (misma fecha)"
-                detalle_dif = "misma fecha valor"
-            elif dif_dias <= tol_dias_fecha:
-                estado = "Conciliado - Valor cerrado (fecha OK)"
-                detalle_dif = f"difieren {dif_dias} dia(s), dentro de tolerancia"
-            else:
-                estado = "Sugerencia - Valor cerrado (verificar fecha)"
-                detalle_dif = f"difieren {dif_dias} dia(s), FUERA de tolerancia"
-
-            monto_txt = f"${importe:,.0f}"
-
-            resultados_estado[id_40] = estado
-            resultados_comentario[id_40] = (
-                f"Valor cerrado {monto_txt} emparejado FIFO con Doc {int(doc_50)} ({detalle_dif})."
-            )
-            resultados_estado[id_50] = estado
-            resultados_comentario[id_50] = (
-                f"Valor cerrado {monto_txt} emparejado FIFO con Doc {int(doc_40)} ({detalle_dif})."
-            )
-
-        sobrantes_40 = lado_40.iloc[n_pares:]
-        sobrantes_50 = lado_50.iloc[n_pares:]
-
-        for _, fila in sobrantes_40.iterrows():
-            resultados_estado[fila["ID_Temp"]] = "Pendiente - Valor cerrado sin par"
-            resultados_comentario[fila["ID_Temp"]] = (
-                f"Valor cerrado ${importe:,.0f} sin contraparte disponible en banco {banco}. Requiere revision manual."
-            )
-        for _, fila in sobrantes_50.iterrows():
-            resultados_estado[fila["ID_Temp"]] = "Pendiente - Valor cerrado sin par"
-            resultados_comentario[fila["ID_Temp"]] = (
-                f"Valor cerrado ${importe:,.0f} sin contraparte disponible en banco {banco}. Requiere revision manual."
-            )
-
-    for id_temp, estado in resultados_estado.items():
-        df.loc[df["ID_Temp"] == id_temp, col_estado] = estado
-    for id_temp, comentario in resultados_comentario.items():
-        df.loc[df["ID_Temp"] == id_temp, col_comentario] = comentario
-
-    return df
-
 
 if archivo_subido is not None:
     try:
@@ -177,7 +44,15 @@ if archivo_subido is not None:
 
             df.columns = df.columns.str.strip()
 
-            col_asignacion = 'Asignacion' if 'Asignacion' in df.columns else 'Asignación'
+            # --- CORRECCION: MAPEADO ROBUSTO DE LA COLUMNA ASIGNACION ---
+            if 'Asignación' in df.columns:
+                col_asignacion = 'Asignación'
+            elif 'Asignacion' in df.columns:
+                col_asignacion = 'Asignacion'
+            else:
+                col_asignacion = 'Asignacion' # Forzamos el error abajo si no existe
+            # -------------------------------------------------------------
+
             col_referencia = 'Referencia'
             col_clave = 'Clave contabiliz.' if 'Clave contabiliz.' in df.columns else 'CT'
             col_fecha = 'Fecha valor' if 'Fecha valor' in df.columns else 'Fe-valor'
@@ -193,7 +68,7 @@ if archivo_subido is not None:
                 st.error(f"No se encontraron estas columnas obligatorias: {faltantes}")
                 st.stop()
             if col_asignacion not in df.columns:
-                st.error("No se encontro la columna de Asignacion en el archivo.")
+                st.error("No se encontró la columna de Asignación en el archivo. Verifica que se llame 'Asignación' o 'Asignacion'.")
                 st.stop()
 
             usar_ipcb = col_clase_doc is not None
@@ -250,6 +125,15 @@ if archivo_subido is not None:
             df[col_banco] = df[col_banco].astype(str).str.strip()
             df[col_importe] = pd.to_numeric(df[col_importe], errors='coerce').fillna(0)
             df['Abs_Importe'] = df[col_importe].abs()
+
+            # --- LLAVES DE CRUCE PARA AUDITORIA EN EXCEL ---
+            doc_str = df[col_doc].fillna(0).astype(int).astype(str)
+            importe_str = df['Abs_Importe'].astype(int).astype(str)
+            ref_str = df[col_referencia].fillna('').astype(str).str.strip()
+
+            df['Patron_Doc_Valor'] = doc_str + "_" + importe_str
+            df['Patron_Global_Ref'] = importe_str + "_" + ref_str
+            # -----------------------------------------------
 
             df['Fecha_Calc'] = pd.to_datetime(df[col_fecha], errors='coerce')
             df[col_fecha] = df['Fecha_Calc'].dt.date
@@ -350,10 +234,35 @@ if archivo_subido is not None:
                 return (v % multiplo_redondo == 0) and v > 0
 
             # =========================================================
+            # NIVEL 0: CRUCE EXACTO DENTRO DEL MISMO DOCUMENTO
+            # =========================================================
+            df_p0_doc = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
+            df_40_doc = df_p0_doc[df_p0_doc[col_clave] == '40'].copy()
+            df_50_doc = df_p0_doc[df_p0_doc[col_clave] == '50'].copy()
+
+            ind_r0 = set()
+            com_r0 = {}
+
+            if not df_40_doc.empty and not df_50_doc.empty:
+                df_40_doc['T_doc'] = df_40_doc.groupby([col_doc, 'Abs_Importe']).cumcount()
+                df_50_doc['T_doc'] = df_50_doc.groupby([col_doc, 'Abs_Importe']).cumcount()
+
+                c0 = pd.merge(df_40_doc, df_50_doc, on=[col_doc, 'Abs_Importe', 'T_doc'], suffixes=('_40', '_50'))
+
+                ind_r0 = set(c0['ID_Temp_40']) | set(c0['ID_Temp_50'])
+                set_estado(ind_r0, 'Conciliado - Mismo Documento')
+                
+                for _, r in c0.iterrows():
+                    com_r0[r['ID_Temp_40']] = f"Cruce interno en el documento {int(r[col_doc])}."
+                    com_r0[r['ID_Temp_50']] = f"Cruce interno en el documento {int(r[col_doc])}."
+                set_comentarios(com_r0)
+
+            # =========================================================
             # NIVEL 1: CRUCES EXACTOS Y MULTIPLES (SUGERENCIAS SEGURAS)
             # =========================================================
-            df_40 = df[df[col_clave] == '40'].copy()
-            df_50 = df[df[col_clave] == '50'].copy()
+            df_p1 = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
+            df_40 = df_p1[df_p1[col_clave] == '40'].copy()
+            df_50 = df_p1[df_p1[col_clave] == '50'].copy()
 
             df_40['T'] = df_40.groupby([col_banco, 'Abs_Importe', col_fecha, col_referencia]).cumcount()
             df_50['T'] = df_50.groupby([col_banco, 'Abs_Importe', col_fecha, col_referencia]).cumcount()
@@ -434,27 +343,6 @@ if archivo_subido is not None:
                 set_comentarios(com_1c_ipcb)
 
             # =========================================================
-            # NIVEL 1D: VALORES CERRADOS REPETIDOS CON TOLERANCIA DE FECHA
-            # =========================================================
-            df = conciliar_valores_cerrados(
-                df,
-                col_banco=col_banco,
-                col_importe=col_importe,
-                col_clave=col_clave,
-                col_fecha=col_fecha,
-                col_doc=col_doc,
-                col_estado='Estado_Conciliacion',
-                col_comentario='Comentario',
-                valores_cerrados=None,
-                detectar_multiplos_de=multiplo_redondo,
-                tol_dias_fecha=tol_dias_cerrados,
-                solo_pendientes=True,
-            )
-            ind_cerrados = set(
-                df[df['Estado_Conciliacion'].astype(str).str.contains('Valor cerrado', na=False)]['ID_Temp']
-            )
-
-            # =========================================================
             # NIVEL 2: SUGERENCIAS MULTIPLES Y SECTORIZACION (BLINDAJE IP)
             # =========================================================
             df_p1d = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
@@ -525,7 +413,7 @@ if archivo_subido is not None:
             set_comentarios(com_r2)
 
             # =========================================================
-            # Desempate Grupo Cerrado (FIFO y Ambiguos) - CORREGIDO
+            # Desempate Grupo Cerrado (FIFO y Ambiguos)
             # =========================================================
             rem40 = df_p40[~df_p40['ID_Temp'].isin(ind_r2)]
             rem50 = df_p50[~df_p50['ID_Temp'].isin(ind_r2)]
@@ -549,9 +437,9 @@ if archivo_subido is not None:
                             com_r2d[r50['ID_Temp']] = f"Valor redondo (${imp:,.0f}) FIFO (VERIFICAR). Doc: {int(r40[col_doc])}"
                     else:
                         for _, r in s40_ord.iterrows():
-                            ind_amb.add(r['ID_Temp']); com_amb[r['ID_Temp']] = f"Confiso ({len(s40_ord)} vs {len(s50_ord)}). Creditos: {resumen_docs(sub50)}"
+                            ind_amb.add(r['ID_Temp']); com_amb[r['ID_Temp']] = f"Confuso ({len(s40_ord)} vs {len(s50_ord)}). Creditos: {resumen_docs(sub50)}"
                         for _, r in s50_ord.iterrows():
-                            ind_amb.add(r['ID_Temp']); com_amb[r['ID_Temp']] = f"Confiso ({len(s50_ord)} vs {len(s40_ord)}). Debitos: {resumen_docs(sub40)}"
+                            ind_amb.add(r['ID_Temp']); com_amb[r['ID_Temp']] = f"Confuso ({len(s50_ord)} vs {len(s40_ord)}). Debitos: {resumen_docs(sub40)}"
                 else:
                     for _, r in sub40.iterrows():
                         ind_amb.add(r['ID_Temp']); com_amb[r['ID_Temp']] = f"{len(sub50)} posibles cruces. Docs: {resumen_docs(sub50)}"
@@ -564,7 +452,7 @@ if archivo_subido is not None:
             set_comentarios(com_amb)
 
             # =========================================================
-            # NIVEL 3: ALERTAS DE FECHA, BANCO Y VALOR
+            # NIVEL 3: ALERTAS DE FECHA Y VALOR (INCLUYE REGLA DE PERIODO ANTERIOR)
             # =========================================================
             df_pend = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
             df_pend['Regex'] = df_pend[col_referencia].astype(str).str.extract(r'(\d+)')[0]
@@ -573,7 +461,7 @@ if archivo_subido is not None:
             df_4n = df_v[df_v[col_clave] == '40'].copy()
             df_5n = df_v[df_v[col_clave] == '50'].copy()
 
-            # 3A: Alertas de Fecha
+            # 3A: Alertas de Fecha y Cruces de Diferentes Periodos
             sA = pd.merge(df_4n, df_5n, on=[col_banco, 'Abs_Importe', 'Regex'], suffixes=('_40', '_50'))
             sA['Dif'] = (sA['Fecha_Calc_40'] - sA['Fecha_Calc_50']).dt.days.abs()
             sA = sA[sA['Dif'] > 0].sort_values('Dif').drop_duplicates('ID_Temp_40').drop_duplicates('ID_Temp_50')
@@ -582,7 +470,11 @@ if archivo_subido is not None:
             for _, r in sA.iterrows():
                 f40, f50 = r['Fecha_Calc_40'], r['Fecha_Calc_50']
                 dif = int(r['Dif'])
-                mismo_periodo = (f40.month == f50.month) and (f40.year == f50.year)
+                
+                # Comprobamos si el mes y el año coinciden (mismo periodo contable)
+                per_40 = (f40.year, f40.month)
+                per_50 = (f50.year, f50.month)
+                mismo_periodo = (per_40 == per_50)
 
                 if dif <= tol_dias:
                     estado = 'Diferencia Fecha (Mismo Periodo)' if mismo_periodo else 'Diferencia Fecha (DIFERENTE PERIODO)'
@@ -594,8 +486,22 @@ if archivo_subido is not None:
                 ids = [r['ID_Temp_40'], r['ID_Temp_50']]
                 ind_A.update(ids)
                 df.loc[df['ID_Temp'].isin(ids), 'Estado_Conciliacion'] = estado
-                com_A[r['ID_Temp_40']] = f"Difiere {dif} dia(s) ({'mismo periodo' if mismo_periodo else 'DIFERENTE MES/ANO'}). Doc: {int(r[col_doc+'_50'])}"
-                com_A[r['ID_Temp_50']] = f"Difiere {dif} dia(s) ({'mismo periodo' if mismo_periodo else 'DIFERENTE MES/ANO'}). Doc: {int(r[col_doc+'_40'])}"
+                
+                # --- NUEVA LÓGICA: Alerta específica cuando cruza con un documento de otro periodo ---
+                if not mismo_periodo:
+                    # Si el documento 50 es de un mes/año anterior al pago 40
+                    if per_50 < per_40:
+                        txt_40 = "ALERTA: Conciliar pero periodo anterior (pago cruza con doc antiguo)."
+                        txt_50 = "ALERTA: Conciliado con un pago en periodo posterior."
+                    else:
+                        txt_40 = "ALERTA: Cruzado con documento emitido en periodo posterior."
+                        txt_50 = "ALERTA: Conciliar pero periodo anterior (doc cruza con pago antiguo)."
+                        
+                    com_A[r['ID_Temp_40']] = f"{txt_40} Dif: {dif} dia(s). Doc: {int(r[col_doc+'_50'])}"
+                    com_A[r['ID_Temp_50']] = f"{txt_50} Dif: {dif} dia(s). Doc: {int(r[col_doc+'_40'])}"
+                else:
+                    com_A[r['ID_Temp_40']] = f"Difiere {dif} dia(s) (mismo periodo). Doc: {int(r[col_doc+'_50'])}"
+                    com_A[r['ID_Temp_50']] = f"Difiere {dif} dia(s) (mismo periodo). Doc: {int(r[col_doc+'_40'])}"
             set_comentarios(com_A)
 
             df_4n = df_4n[~df_4n['ID_Temp'].isin(ind_A)]
@@ -681,16 +587,11 @@ if archivo_subido is not None:
                 if est == 'pendiente' or est == '' or est == 'nan':
                     return [''] * len(row)
 
-                if 'valor cerrado' in est:
-                    if 'sugerencia' in est or 'sin par' in est:
-                        return ['background-color: #FFE699; color: black'] * len(row)
-                    return ['background-color: #A9D18E; color: black'] * len(row)
-
                 if ('cruce exacto' in est or 'cruce multiple' in est or 'cruce unico' in est
-                    or 'cruce distribuidora' in est):
+                    or 'cruce unico' in est or 'cruce distribuidora' in est or 'mismo documento' in est):
                     return ['background-color: #C5D9F1; color: black'] * len(row)
 
-                if ('fifo' in est or 'multiples' in est
+                if ('fifo' in est or 'multiples' in est or 'multiples' in est
                     or 'sectorizacion' in est or 'solicitar soporte' in est):
                     return ['background-color: #FFF2CC; color: black'] * len(row)
 
@@ -731,7 +632,7 @@ if archivo_subido is not None:
             b_unicos = sorted(b_unicos, key=get_bank_order)
 
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df_nov = df_final[~df_final['Estado_Conciliacion'].str.contains('Conciliado|exacto|unico|multiple|Sectorizacion', case=False, na=False)].copy()
+                df_nov = df_final[~df_final['Estado_Conciliacion'].str.contains('Conciliado|exacto|unico|multiple|Sectorizacion|mismo documento', case=False, na=False)].copy()
                 df_nov = df_nov[df_nov[col_clave] == '40']
 
                 if not df_nov.empty:
@@ -753,17 +654,16 @@ if archivo_subido is not None:
             # =========================================================
             # INTERFAZ
             # =========================================================
-            st.success("Conciliacion Integral terminada! Pestanas ordenadas secuencialmente.")
+            st.success("Conciliacion Integral terminada! Pestañas ordenadas secuencialmente.")
             if not cuadre_ok:
-                st.warning("⚠️ Revisa la pestana DESCARTADAS, el total de filas no coincide.")
+                st.warning("⚠️ Revisa la pestaña DESCARTADAS, el total de filas no coincide.")
 
-            c1, c2, c3, c4, c5, c6 = st.columns(6)
-            c1.metric("Seguras (Azul)", len(ind_r1 | ind_r1b | ind_1c_ipcb | ind_r2 | ind_r1d))
-            c2.metric("Valores cerrados", len(ind_cerrados))
-            c3.metric("Multiples/FIFO (Amarillo)", len(ind_r1d_f | ind_r1d_a | ind_r2d | ind_amb))
-            c4.metric("Reclasificar (Lila)", len(ind_B))
-            c5.metric("Diferencias Fe/Val (Durazno/Rojo)", len(ind_A | ind_C | ind_D))
-            c6.metric("Pendientes (Sin Color)", len(df_final[df_final['Estado_Conciliacion'] == 'Pendiente']))
+            c1, c2, c3, c4, c5 = st.columns(5)
+            c1.metric("Seguras (Azul/Verde)", len(ind_r0 | ind_r1 | ind_r1b | ind_1c_ipcb | ind_r2 | ind_r1d))
+            c2.metric("Multiples/FIFO (Amarillo)", len(ind_r1d_f | ind_r1d_a | ind_r2d | ind_amb))
+            c3.metric("Reclasificar (Lila)", len(ind_B))
+            c4.metric("Diferencias Fe/Val (Durazno/Rojo)", len(ind_A | ind_C | ind_D))
+            c5.metric("Pendientes (Sin Color)", len(df_final[df_final['Estado_Conciliacion'] == 'Pendiente']))
 
             if filas_excluidas > 0:
                 st.warning(f"⚠️ Se excluyeron {filas_excluidas} filas vacias/totales.")
