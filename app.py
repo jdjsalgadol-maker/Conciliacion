@@ -373,9 +373,8 @@ if archivo_subido is not None:
             set_comentarios(com_r2)
 
             # =========================================================
-            # Desempate Grupo Cerrado (FIFO y Ambiguos) - CORREGIDO
+            # Desempate Grupo Cerrado (FIFO y Ambiguos)
             # =========================================================
-            # Enfrentamos TODOS los pendientes que no se cruzaron en cruce único
             rem40 = df_p40[~df_p40['ID_Temp'].isin(ind_r2)]
             rem50 = df_p50[~df_p50['ID_Temp'].isin(ind_r2)]
 
@@ -386,11 +385,9 @@ if archivo_subido is not None:
                 b, imp, f = grp
                 sub50 = rem50[(rem50[col_banco] == b) & (rem50['Abs_Importe'] == imp) & (rem50[col_fecha] == f)]
                 
-                # Si no hay contrapartida, pasamos a la siguiente
                 if sub50.empty:
                     continue
 
-                # Si es un valor redondo, intentamos emparejamiento FIFO
                 if es_valor_redondo(imp):
                     s40_ord, s50_ord = sub40.sort_values(col_doc), sub50.sort_values(col_doc)
                     if len(s40_ord) == len(s50_ord):
@@ -404,13 +401,12 @@ if archivo_subido is not None:
                         for _, r in s50_ord.iterrows():
                             ind_amb.add(r['ID_Temp']); com_amb[r['ID_Temp']] = f"Confiso ({len(s50_ord)} vs {len(s40_ord)}). Débitos: {resumen_docs(sub40)}"
                 else:
-                    # Si no es redondo pero es ambiguo
                     for _, r in sub40.iterrows():
                         ind_amb.add(r['ID_Temp']); com_amb[r['ID_Temp']] = f"{len(sub50)} posibles cruces. Docs: {resumen_docs(sub50)}"
                     for _, r in sub50.iterrows():
                         ind_amb.add(r['ID_Temp']); com_amb[r['ID_Temp']] = f"{len(sub40)} posibles cruces. Docs: {resumen_docs(sub40)}"
 
-            set_estado(ind_r2d, 'Sugerencia fuerte')
+            set_estado(ind_r2d, 'Sugerencia fuerte: Valor redondo (FIFO)')
             set_comentarios(com_r2d)
             set_estado(ind_amb, 'Sugerencia: Solicitar soporte')
             set_comentarios(com_amb)
@@ -530,29 +526,24 @@ if archivo_subido is not None:
             def resaltar_conciliados(row):
                 est = str(row['Estado_Conciliacion']).strip().lower()
 
-                # Los pendientes NUNCA se colorean (deben quedar en blanco/sin estilo)
                 if est == 'pendiente' or est == '' or est == 'nan':
                     return [''] * len(row)
 
-                # 1) AZUL claro: conciliaciones seguras (exacto, único, múltiple, por distribuidora)
                 if ('cruce exacto' in est or 'cruce múltiple' in est or 'cruce unico' in est
                         or 'cruce único' in est or 'cruce distribuidora' in est):
                     return ['background-color: #C5D9F1; color: black'] * len(row)
 
-                # 2) AMARILLO claro: sugerencias fuertes / múltiples / FIFO / requieren soporte
                 if ('fifo' in est or 'múltiples' in est or 'multiples' in est
-                        or 'sectorización' in est or 'solicitar soporte' in est):
+                        or 'sectorización' in est or 'solicitar soporte' in est
+                        or 'fuerte' in est):
                     return ['background-color: #FFF2CC; color: black'] * len(row)
 
-                # 3) DURAZNO claro: diferencias de fecha / periodo
                 if 'fecha' in est or 'periodo' in est:
                     return ['background-color: #FDEBD0; color: black'] * len(row)
 
-                # 4) LILA claro: reclasificación entre bancos
                 if 'reclasificación' in est or 'otro banco' in est:
                     return ['background-color: #D7BDE2; color: black'] * len(row)
 
-                # 5) ROJO/SALMÓN claro: diferencias de valor
                 if 'valor' in est:
                     return ['background-color: #F5B7B1; color: black'] * len(row)
 
@@ -564,46 +555,35 @@ if archivo_subido is not None:
             output = io.BytesIO()
             b_unicos = [b for b in df_final[col_banco].unique() if str(b).strip().lower() not in ('', 'nan')]
 
-            # Definir el orden estricto solicitado
             orden_cuentas = [
                 "1110056001", "1110056101", "1110056201", "1110056301",
                 "1110056401", "1110056501", "1110056601", "1110056701",
                 "1120055001", "1120055101", "1120055301"
             ]
-            # Extraer los nombres de banco correspondientes al orden
             nombres_ordenados = [mapeo_cuentas_banco.get(c, f"CUENTA {c} (sin mapear)") for c in orden_cuentas]
 
-            # Función para ordenar los bancos encontrados según la lista
             def get_bank_order(banco_str):
                 banco_str = str(banco_str).strip()
                 if banco_str in nombres_ordenados:
                     return nombres_ordenados.index(banco_str)
-                # Si el banco no está explícitamente nombrado pero contiene la cuenta
                 for i, acc in enumerate(orden_cuentas):
                     if acc in banco_str:
                         return i
-                return 999 # Bancos no listados se envían al final
+                return 999
 
-            # Ordenar la lista de bancos únicos
             b_unicos = sorted(b_unicos, key=get_bank_order)
 
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 
-                # 1. Pestaña de Novedades y Pendientes SOLO Clave 40 (Reemplaza a Resumen)
-                # Filtramos todos los documentos que NO han conciliado de forma exacta/segura
-                df_nov = df_final[~df_final['Estado_Conciliacion'].str.contains('Conciliado|exacto|unico|múltiple|Sectorización', case=False, na=False)].copy()
-                
-                # Dejamos ÚNICAMENTE los registros de la empresa (Clave 40)
+                df_nov = df_final[~df_final['Estado_Conciliacion'].str.startswith('Conciliado', na=False)].copy()
                 df_nov = df_nov[df_nov[col_clave] == '40']
                 
                 if not df_nov.empty:
                     df_nov = df_nov.sort_values(by=['Estado_Conciliacion', col_importe])
                     df_nov.style.apply(resaltar_conciliados, axis=1).to_excel(writer, index=False, sheet_name='NOVEDADES_Y_PENDIENTES_40')
                 else:
-                    # En caso de no haber novedades, generar la pestaña en blanco
                     pd.DataFrame(columns=df_final.columns).to_excel(writer, index=False, sheet_name='NOVEDADES_Y_PENDIENTES_40')
 
-                # 2. Pestañas por Banco en Orden Secuencial
                 for banco in b_unicos:
                     df_b = df_final[df_final[col_banco] == banco].copy().sort_values(by=col_importe, ascending=True)
                     n_pestana = re.sub(r'[\\/*?:\[\]]', '-', str(banco)[:31])
@@ -611,7 +591,6 @@ if archivo_subido is not None:
                         n_pestana = "Sin_Banco"
                     df_b.style.apply(resaltar_conciliados, axis=1).to_excel(writer, index=False, sheet_name=n_pestana)
 
-                # 3. Descartadas
                 if not filas_descartadas.empty:
                     filas_descartadas.to_excel(writer, index=False, sheet_name='DESCARTADAS_SIN_DOC_O_CT')
 
