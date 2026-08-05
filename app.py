@@ -64,7 +64,7 @@ def analizar_documentos_repetidos(
     valores = ["Doc solo tiene un lado (40 o 50)", "Doc cruza exacto"]
     df["Cruce_Doc"] = np.select(condiciones, valores, default="Doc NO cruza - revisar linea")
 
-    df["Linea_Doc_Estado"] = ""
+    df["Detalle_Doc_Repetido"] = ""
 
     for doc_val, grupo in df.groupby(col_doc):
         if len(grupo) <= 1:
@@ -78,11 +78,11 @@ def analizar_documentos_repetidos(
         ids_en_par = list(g40["ID_Temp"].iloc[:n_pares]) + list(g50["ID_Temp"].iloc[:n_pares])
         ids_sobrantes = list(g40["ID_Temp"].iloc[n_pares:]) + list(g50["ID_Temp"].iloc[n_pares:])
 
-        df.loc[df["ID_Temp"].isin(ids_en_par), "Linea_Doc_Estado"] = "En par dentro del documento"
-        df.loc[df["ID_Temp"].isin(ids_sobrantes), "Linea_Doc_Estado"] = "LINEA QUE NO CRUZA en el documento"
+        df.loc[df["ID_Temp"].isin(ids_en_par), "Detalle_Doc_Repetido"] = "En par dentro del documento"
+        df.loc[df["ID_Temp"].isin(ids_sobrantes), "Detalle_Doc_Repetido"] = "LÍNEA QUE NO CRUZA en el documento"
 
         if len(g40) == len(g50) and grupo["Cruce_Doc"].iloc[0] == "Doc cruza exacto":
-            df.loc[df["ID_Temp"].isin(grupo["ID_Temp"]), "Linea_Doc_Estado"] = "En par dentro del documento"
+            df.loc[df["ID_Temp"].isin(grupo["ID_Temp"]), "Detalle_Doc_Repetido"] = "En par dentro del documento"
 
     if col_estado in df.columns:
         mask_pendiente = df[col_estado] == "Pendiente"
@@ -236,13 +236,12 @@ if archivo_subido is not None:
 
             df.columns = df.columns.str.strip()
 
-            # --- MAPEO ROBUSTO DE ASIGNACION (Integrado) ---
             if 'Asignación' in df.columns:
                 col_asignacion = 'Asignación'
             elif 'Asignacion' in df.columns:
                 col_asignacion = 'Asignacion'
             else:
-                col_asignacion = 'Asignacion' # Para forzar error si no existe
+                col_asignacion = 'Asignacion'
 
             col_referencia = 'Referencia'
             col_clave = 'Clave contabiliz.' if 'Clave contabiliz.' in df.columns else 'CT'
@@ -320,14 +319,14 @@ if archivo_subido is not None:
             df[col_importe] = pd.to_numeric(df[col_importe], errors='coerce').fillna(0)
             df['Abs_Importe'] = df[col_importe].abs()
 
-            # --- LLAVES DE CRUCE PARA AUDITORIA EN EXCEL (Integrado) ---
+            # --- LLAVES DE CRUCE ---
             doc_str = df[col_doc].fillna(0).astype(int).astype(str)
             importe_str = df['Abs_Importe'].astype(int).astype(str)
             ref_str = df[col_referencia].fillna('').astype(str).str.strip()
 
             df['Patron_Doc_Valor'] = doc_str + "_" + importe_str
             df['Patron_Global_Ref'] = importe_str + "_" + ref_str
-            # -------------------------------------------------------------
+            # ------------------------
 
             df['Fecha_Calc'] = pd.to_datetime(df[col_fecha], errors='coerce')
             df[col_fecha] = df['Fecha_Calc'].dt.date
@@ -336,7 +335,7 @@ if archivo_subido is not None:
             df['Comentario'] = ''
 
             # =========================================================
-            # 3B. COLUMNA NUEVA: DOCUMENTOS REPETIDOS (COLUMNA B)
+            # 3B. EJECUCIÓN DE DOCUMENTOS REPETIDOS
             # =========================================================
             df = analizar_documentos_repetidos(
                 df,
@@ -403,14 +402,6 @@ if archivo_subido is not None:
                 if 'ACOPI' in t or 'D503' in t: return 'Dist Acopi'
                 if 'PASTO' in t or 'D505' in t: return 'Dist Pasto'
                 if 'BUGA' in t or 'D502' in t: return 'Dist Buga'
-
-                numeros = re.findall(r'\b\d{4}\b', t)
-                for n in numeros:
-                    num = int(n)
-                    if 2000 <= num <= 2999: return 'Dist Buga'
-                    if 3000 <= num <= 3999: return 'Dist Acopi'
-                    if 4000 <= num <= 4999: return 'Dist Dosquebradas'
-                    if 6000 <= num <= 6999: return 'Dist Pasto'
                 return 'Sin clasificar'
 
             def obtener_ref_homologada(row):
@@ -440,7 +431,7 @@ if archivo_subido is not None:
                 return (v % multiplo_redondo == 0) and v > 0
 
             # =========================================================
-            # NIVEL 1: CRUCES EXACTOS Y MULTIPLES (SUGERENCIAS SEGURAS)
+            # NIVEL 1: CRUCES EXACTOS Y MULTIPLES 
             # =========================================================
             df_p1 = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
             df_40 = df_p1[df_p1[col_clave] == '40'].copy()
@@ -654,7 +645,7 @@ if archivo_subido is not None:
             set_comentarios(com_amb)
 
             # =========================================================
-            # NIVEL 3: ALERTAS DE FECHA Y VALOR (INCLUYE REGLA PERIODO ANTERIOR)
+            # NIVEL 3: ALERTAS DE FECHA Y VALOR 
             # =========================================================
             df_pend = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
             df_pend['Regex'] = df_pend[col_referencia].astype(str).str.extract(r'(\d+)')[0]
@@ -673,7 +664,6 @@ if archivo_subido is not None:
                 f40, f50 = r['Fecha_Calc_40'], r['Fecha_Calc_50']
                 dif = int(r['Dif'])
                 
-                # Regla de Integración: Check de Periodos
                 per_40 = (f40.year, f40.month)
                 per_50 = (f50.year, f50.month)
                 mismo_periodo = (per_40 == per_50)
@@ -689,7 +679,6 @@ if archivo_subido is not None:
                 ind_A.update(ids)
                 df.loc[df['ID_Temp'].isin(ids), 'Estado_Conciliacion'] = estado
                 
-                # Regla de Integración: Alerta especifica
                 if not mismo_periodo:
                     if per_50 < per_40:
                         txt_40 = "ALERTA: Conciliar pero periodo anterior (pago cruza con doc antiguo)."
@@ -775,10 +764,21 @@ if archivo_subido is not None:
                 df.loc[sin_p & (df['Comentario'] == ''), 'Comentario'] = 'Sin coincidencia ni sugerencia encontrada - requiere revision manual completa'
 
             # =========================================================
-            # LIMPIEZA FINAL Y FORMATO
+            # LIMPIEZA FINAL Y FORMATO (AQUÍ SE BORRAN LAS COLUMNAS BASURA)
             # =========================================================
             cuadre_ok = filas_antes == (len(df) + len(filas_descartadas))
-            df_final = df.drop(columns=['ID_Temp', 'Abs_Importe', 'Fecha_Calc'], errors='ignore')
+            
+            # 1. Definimos las columnas que ya no necesitas ver en el Excel
+            columnas_a_borrar = [
+                'ID_Temp', 'Abs_Importe', 'Fecha_Calc', 'Periodo_Contable',
+                'Total_Posiciones_Doc', 'Tiene_Posiciones_Repetidas', 
+                'N_40_Doc', 'N_50_Doc', 'Suma_40_Doc', 'Suma_50_Doc', 'Cruce_Doc'
+            ]
+            
+            # 2. Eliminamos todo lo innecesario
+            df_final = df.drop(columns=columnas_a_borrar, errors='ignore')
+            
+            # 3. Formateamos las fechas
             for col_f in [c for c in df_final.columns if 'fe.' in c.lower() or 'fecha' in c.lower() or 'fe-' in c.lower()]:
                 df_final[col_f] = pd.to_datetime(df_final[col_f], errors='coerce').dt.strftime('%d/%m/%Y')
 
@@ -863,9 +863,9 @@ if archivo_subido is not None:
             # =========================================================
             # INTERFAZ
             # =========================================================
-            st.success("¡Conciliacion Integral terminada! Pestanas ordenadas secuencialmente.")
+            st.success("¡Conciliacion Integral terminada! Pestañas ordenadas secuencialmente.")
             if not cuadre_ok:
-                st.warning("⚠️ Revisa la pestana DESCARTADAS, el total de filas no coincide.")
+                st.warning("⚠️ Revisa la pestaña DESCARTADAS, el total de filas no coincide.")
 
             c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
             c1.metric("Seguras (Azul)", len(ind_r1 | ind_r1b | ind_1c_ipcb | ind_r2 | ind_r1d))
