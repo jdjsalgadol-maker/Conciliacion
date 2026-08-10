@@ -1,33 +1,22 @@
-# app_conciliacion_v14_vista_simplificada.py
+# app_conciliacion_v15_paleta_actualizada.py
 #
-# Basado en v13 (fix del KeyError 'Referencia'). NINGUNA regla de negocio
-# cambia respecto a v13: periodo obligatorio, tope 9 dias, banco, importe,
-# distribuidora, NEQUI, gate unico de seguridad para la columna O, etc.
+# Idéntico a v14 (vista simplificada A..O + U). ÚNICO CAMBIO: los codigos
+# hexadecimales de la paleta de 5 colores, segun lo solicitado:
 #
-# LO UNICO QUE CAMBIA es la CAPA DE PRESENTACION del Excel final, para
-# facilitar la lectura y revision de novedades:
+#   - Verde       -> #C5D9F1  (Conciliado: match seguro, automatico)
+#   - Amarillo    -> #A9D18E  (Verificar / Sugerencia: FIFO, multiples,
+#                    posiciones repetidas, solicitar soporte)
+#   - Naranja     -> #FDEBD0  (Alerta de fecha / diferencia de valor)
+#   - Lila        -> #D7BDE2  (Reclasificacion de banco)
+#   - Gris claro  -> #FFFFFF  (Pendiente / sin coincidencia)
 #
-#   1. Columnas visibles: se recorta la salida a las columnas originales
-#      del archivo (A..L en un archivo tipico SAP) + Estado_Conciliacion
-#      (M) + Comentario (N) + Candidatos_Conciliacion (O) + Distribuidora
-#      (U). Se ocultan del Excel final las columnas tecnicas intermedias
-#      (Periodo_Contable, Posiciones_Mismo_Doc, Total_Posiciones_Grupo,
-#      Docs_Unicos_Grupo, Tiene_Posiciones_Repetidas) y las auxiliares
-#      finales (Es_Nequi, Referencia_Limpia, Asignacion_Limpia). Estas
-#      columnas SIGUEN calculandose y usandose internamente para las
-#      reglas y para filtrar la pestana de posiciones multiples; solo se
-#      excluyen al momento de escribir el Excel.
+# Ninguna regla de negocio cambia: periodo obligatorio, tope 9 dias para
+# alertas de texto, banco, importe, distribuidora, NEQUI, gate unico de
+# seguridad para la columna O (Candidatos_Conciliacion), fix del KeyError
+# 'Referencia' de v13, y columnas visibles A..L + Estado (M) + Comentario
+# (N) + Candidatos_Conciliacion (O) + Distribuidora (U).
 #
-#   2. Paleta de colores reducida a 5 categorias, para que sea facil de
-#      identificar de un vistazo al revisar novedades:
-#         - Verde  (#C5D9F1): Conciliado (match seguro, automatico)
-#         - Amarillo (#A9D18E): Verificar / Sugerencia (FIFO, multiples,
-#           posiciones repetidas, solicitar soporte)
-#         - Naranja (#FDEBD0): Alerta de fecha / diferencia de valor
-#         - Lila (#D7BDE2): Reclasificacion de banco
-#         - Gris claro (#FFFFFF): Pendiente / sin coincidencia
-#
-# Ejecutar con: streamlit run app_conciliacion_v14_vista_simplificada.py
+# Ejecutar con: streamlit run app_conciliacion_v15_paleta_actualizada.py
 
 import streamlit as st
 import pandas as pd
@@ -67,6 +56,15 @@ with st.expander("⚙️ Parámetros de tolerancia para sugerencias (alertas)"):
 
 TOPE_DIAS_ALERTA = 9
 tol_dias = min(tol_dias, TOPE_DIAS_ALERTA)
+
+# ---------------------------------------------------------
+# NUEVA PALETA (unico cambio respecto a v14)
+# ---------------------------------------------------------
+COLOR_CONCILIADO = "#C5D9F1"      # Verde (etiqueta) -> match seguro/automatico
+COLOR_VERIFICAR = "#A9D18E"       # Amarillo (etiqueta) -> Sugerencia/FIFO/multiples
+COLOR_ALERTA = "#FDEBD0"          # Naranja -> alerta de fecha / diferencia de valor
+COLOR_RECLASIFICAR = "#D7BDE2"    # Lila -> reclasificacion de banco
+COLOR_PENDIENTE = "#FFFFFF"       # Gris claro (etiqueta) -> pendiente / sin coincidencia
 
 archivo_subido = st.file_uploader("Selecciona el archivo de Excel o CSV", type=['xlsx', 'csv'])
 
@@ -114,12 +112,6 @@ if archivo_subido is not None:
 
             usar_ipcb = col_clase_doc is not None
 
-            # ---------------------------------------------------------
-            # NUEVO: se captura el orden EXACTO de las columnas originales
-            # del archivo, ANTES de agregar cualquier columna calculada.
-            # Esto define las columnas A..L (o las que tenga el archivo)
-            # que se mostraran en el Excel final.
-            # ---------------------------------------------------------
             columnas_originales = list(df.columns)
 
             # =========================================================
@@ -183,17 +175,14 @@ if archivo_subido is not None:
             df['Candidatos_Conciliacion'] = ''
 
             # =========================================================
-            # PERIODO CONTABLE (REGLA NO NEGOCIABLE) - columna tecnica,
-            # se usa internamente pero NO se muestra en el Excel final.
+            # PERIODO CONTABLE (REGLA NO NEGOCIABLE)
             # =========================================================
             fecha_contable_calc = pd.to_datetime(df[col_fecha_contable], errors='coerce')
             df['Periodo_Contable'] = fecha_contable_calc.dt.to_period('M').astype(str)
             df.loc[fecha_contable_calc.isna(), 'Periodo_Contable'] = 'SIN_FECHA_CONTABLE'
 
             # =========================================================
-            # DETECCIÓN DE DOCUMENTOS CON POSICIONES MÚLTIPLES - columnas
-            # tecnicas, se usan internamente para filtrar la pestana
-            # REVISAR_POSICIONES_MULTIPLES pero NO se muestran en el Excel.
+            # DETECCIÓN DE DOCUMENTOS CON POSICIONES MÚLTIPLES
             # =========================================================
             grp_multi = [col_banco, 'Abs_Importe', col_fecha, col_referencia, 'Periodo_Contable']
             df['Posiciones_Mismo_Doc'] = df.groupby([col_doc] + grp_multi)[col_doc].transform('count')
@@ -203,7 +192,6 @@ if archivo_subido is not None:
 
             # =========================================================
             # CLASIFICACIÓN DE DISTRIBUIDORAS Y HOMOLOGACIÓN (IP/CB)
-            # 'Distribuidora' SI se muestra en el Excel final (columna U).
             # =========================================================
             mapeo_referencias_dist = {
                 "11760923": "Dist Acopi", "11761277": "Dist Acopi", "11761293": "Dist Acopi",
@@ -278,8 +266,6 @@ if archivo_subido is not None:
 
             df['Distribuidora'] = df.apply(clasificar_distribuidora, axis=1)
 
-            # Columnas tecnicas auxiliares (NO se muestran en el Excel final,
-            # pero SI se usan dentro del gate de seguridad candidato_seguro).
             def es_nequi(row):
                 texto = f"{row.get(col_texto,'') if col_texto else ''} {row.get(col_asignacion,'')} {row.get(col_referencia,'')}".upper()
                 return 'NEQUI' in texto
@@ -428,8 +414,6 @@ if archivo_subido is not None:
                         ):
                             usados_global.update([ida, idb])
 
-            # Bloque corregido en v13: nunca leer 'r[col_referencia]' de filas
-            # fusionadas ambiguas; siempre buscar por ID_Temp en df original.
             com_r1_multi = {}
             for c in (c1, c2, c3):
                 for _, r in c.iterrows():
@@ -826,14 +810,7 @@ if archivo_subido is not None:
                 df.loc[sin_p & (df['Comentario'] == ''), 'Comentario'] = 'Sin coincidencia ni sugerencia que cumpla reglas de seguridad - revisión manual completa'
 
             # =========================================================
-            # NUEVO: SELECCIÓN DE COLUMNAS VISIBLES (A..O + U)
-            # -----------------------------------------------------------
-            # El DataFrame 'df' internamente sigue teniendo TODAS las
-            # columnas (necesarias para filtros como Tiene_Posiciones_
-            # Repetidas). Justo antes de exportar cada pestaña se aplica
-            # esta funcion para mostrar solo lo pedido:
-            #   [columnas originales A..L] + Estado_Conciliacion (M) +
-            #   Comentario (N) + Candidatos_Conciliacion (O) + Distribuidora (U)
+            # SELECCIÓN DE COLUMNAS VISIBLES (A..O + U)
             # =========================================================
             columnas_visibles = columnas_originales + [
                 'Estado_Conciliacion', 'Comentario', 'Candidatos_Conciliacion', 'Distribuidora'
@@ -852,34 +829,29 @@ if archivo_subido is not None:
                 df_final[col_f] = pd.to_datetime(df_final[col_f], errors='coerce').dt.strftime('%d/%m/%Y')
 
             # ---------------------------------------------------------
-            # NUEVO: PALETA DE 5 COLORES (antes eran 7+)
-            #   1. Verde        -> Conciliado (match seguro/automatico)
-            #   2. Amarillo     -> Verificar / Sugerencia (FIFO, multiples)
-            #   3. Naranja      -> Alerta de fecha / diferencia de valor
-            #   4. Lila         -> Reclasificacion de banco
-            #   5. Gris claro   -> Pendiente / sin coincidencia
+            # PALETA DE 5 COLORES ACTUALIZADA (unico cambio vs v14)
             # ---------------------------------------------------------
             def resaltar_conciliados(row):
                 est = str(row['Estado_Conciliacion']).strip().lower()
 
                 if est in ('pendiente', '', 'nan'):
-                    return ['background-color: #EAEAEA; color: black'] * len(row)
+                    return [f'background-color: {COLOR_PENDIENTE}; color: black'] * len(row)
 
                 if 'reclasificación' in est or 'otro banco' in est:
-                    return ['background-color: #D7BDE2; color: black'] * len(row)
+                    return [f'background-color: {COLOR_RECLASIFICAR}; color: black'] * len(row)
 
                 if 'alerta' in est or 'diferencia' in est or 'fecha' in est or 'periodo' in est:
-                    return ['background-color: #FDEBD0; color: black'] * len(row)
+                    return [f'background-color: {COLOR_ALERTA}; color: black'] * len(row)
 
                 if ('sugerencia' in est or 'fifo' in est or 'multiples' in est
                         or 'múltiples' in est or 'verificar' in est or 'soporte' in est
                         or 'fuerte' in est):
-                    return ['background-color: #FFF2CC; color: black'] * len(row)
+                    return [f'background-color: {COLOR_VERIFICAR}; color: black'] * len(row)
 
                 if 'conciliado' in est:
-                    return ['background-color: #A9D18E; color: black'] * len(row)
+                    return [f'background-color: {COLOR_CONCILIADO}; color: black'] * len(row)
 
-                return ['background-color: #EAEAEA; color: black'] * len(row)
+                return [f'background-color: {COLOR_PENDIENTE}; color: black'] * len(row)
 
             # =========================================================
             # EXPORTACIÓN (todas las pestañas usan vista_simplificada)
@@ -939,7 +911,7 @@ if archivo_subido is not None:
             # =========================================================
             # INTERFAZ
             # =========================================================
-            st.success("¡Conciliación Integral terminada! Vista simplificada: columnas originales + Estado + Comentario + Candidatos + Distribuidora.")
+            st.success("¡Conciliación Integral terminada! Paleta actualizada y vista simplificada (A..O + Distribuidora).")
             if not cuadre_ok:
                 st.warning("⚠️ Revisa la pestaña DESCARTADAS, el total de filas no coincide.")
 
@@ -947,21 +919,21 @@ if archivo_subido is not None:
             if n_multi > 0:
                 st.warning(f"⚠️ Se detectaron {n_multi} filas con documentos de posiciones múltiples. Revisa REVISAR_POSICIONES_MULTIPLES antes de dar por bueno el cruce automático.")
 
-            st.markdown("""
+            st.markdown(f"""
 **Leyenda de colores (5 categorías):**
-- 🟩 Verde: Conciliado (match seguro)
-- 🟨 Amarillo: Verificar / Sugerencia (FIFO, múltiples posiciones)
-- 🟧 Naranja: Alerta de fecha o diferencia de valor
-- 🟪 Lila: Reclasificación de banco
-- ⬜ Gris: Pendiente / sin coincidencia
-""")
+- <span style="background-color:{COLOR_CONCILIADO}; padding:2px 8px;">Conciliado (match seguro)</span>
+- <span style="background-color:{COLOR_VERIFICAR}; padding:2px 8px;">Verificar / Sugerencia (FIFO, múltiples posiciones)</span>
+- <span style="background-color:{COLOR_ALERTA}; padding:2px 8px;">Alerta de fecha o diferencia de valor</span>
+- <span style="background-color:{COLOR_RECLASIFICAR}; padding:2px 8px;">Reclasificación de banco</span>
+- <span style="background-color:{COLOR_PENDIENTE}; padding:2px 8px; border:1px solid #ccc;">Pendiente / sin coincidencia</span>
+""", unsafe_allow_html=True)
 
             c1_, c2_, c3_, c4_, c5_ = st.columns(5)
-            c1_.metric("Conciliadas (Verde)", int(df_final['Estado_Conciliacion'].str.contains('Conciliado', na=False).sum()))
-            c2_.metric("Verificar (Amarillo)", len(ind_r1d_f | ind_r1d_a | ind_r2d | ind_amb | (ind_r1_multi - usados_global)))
-            c3_.metric("Alertas (Naranja)", len(ind_A | ind_C))
-            c4_.metric("Reclasificar (Lila)", len(ind_B))
-            c5_.metric("Pendientes (Gris)", int((df_final['Estado_Conciliacion'] == 'Pendiente').sum()))
+            c1_.metric("Conciliadas", int(df_final['Estado_Conciliacion'].str.contains('Conciliado', na=False).sum()))
+            c2_.metric("Verificar", len(ind_r1d_f | ind_r1d_a | ind_r2d | ind_amb | (ind_r1_multi - usados_global)))
+            c3_.metric("Alertas", len(ind_A | ind_C))
+            c4_.metric("Reclasificar", len(ind_B))
+            c5_.metric("Pendientes", int((df_final['Estado_Conciliacion'] == 'Pendiente').sum()))
 
             if filas_excluidas > 0:
                 st.warning(f"⚠️ Se excluyeron {filas_excluidas} filas vacías/totales.")
