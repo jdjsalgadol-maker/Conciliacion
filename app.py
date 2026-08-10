@@ -1,54 +1,61 @@
-# app_conciliacion_v17_columna_O_completa.py
+# app_conciliacion_v18_fifo_posicional.py
 #
-# FIX FUNCIONAL sobre v16: la columna O (Candidatos_Conciliacion) quedaba
-# VACIA para las filas marcadas como "Sugerencia fuerte - posiciones
-# multiples" (ver captura de pantalla: el comentario menciona "6
-# posiciones identicas" pero la columna O nunca se llenaba ahi). Esto
-# impedia filtrar por un Nº de documento y ver sus candidatos reales.
+# CORRECCION DE ENFOQUE sobre v17 (feedback del usuario, ver capturas):
 #
-# NUEVO OBJETIVO IMPLEMENTADO (pedido explicito del usuario):
-#   Si se filtra la columna O (o el Nº de documento) por, por ejemplo,
-#   1400081553, debe listar TODOS los candidatos reales a conciliar de
-#   ese grupo, SIN IMPORTAR el Estado_Conciliacion de cada fila
-#   (Conciliado, Sugerencia, Pendiente, Alerta...), y AUNQUE las
-#   posiciones repetidas tengan IMPORTES DIFERENTES entre si.
+# v17 LISTABA TODOS los candidatos del grupo dentro de CADA celda de la
+# columna O. Eso NO es lo pedido. El comportamiento correcto es:
 #
-# COMO SE LOGRA:
-#   Se agrega un PASO FINAL UNICO de enriquecimiento (despues de que
-#   todos los niveles de conciliacion ya corrieron y ya fijaron
-#   Estado_Conciliacion). Este paso:
-#     1. Calcula una clave de grupo por fila: banco + fecha + periodo +
-#        (Referencia_Limpia si es lado credito=50, o Asignacion_Limpia
-#        si es lado debito=40, replicando la misma logica de cruce que
-#        ya usa el resto del motor en el bloque 1B). Esta clave NO
-#        incluye el importe, para que posiciones con distinto valor
-#        pero mismo banco/fecha/periodo/referencia queden en el mismo
-#        grupo.
-#     2. Para cada grupo con 2 o mas filas, sobrescribe la columna
-#        Candidatos_Conciliacion de CADA fila con la lista de TODAS
-#        LAS DEMAS filas del grupo (excluyendose a si misma), mostrando
-#        documento, clase/clave, importe y su Estado_Conciliacion
-#        individual entre corchetes.
-#     3. Esto NO cambia Estado_Conciliacion (la clasificacion automatica
-#        ya calculada por las reglas de seguridad se mantiene intacta);
-#        solo AMPLIA el contenido de la columna O para que sea una
-#        vista de "todos los candidatos posibles del grupo", util para
-#        filtrar y conciliar manualmente los casos de posiciones
-#        multiples con valores distintos.
+#   Si el documento 1400081553 (clave 40 = DZ) tiene 6 posiciones/lineas
+#   repetidas con el MISMO banco+fecha+periodo+referencia (sin importar
+#   si el importe difiere entre posiciones), y del otro lado (clave 50 =
+#   CB) hay varios documentos candidatos distintos que tambien comparten
+#   banco+fecha+periodo+referencia, entonces:
 #
-# La clave de grupo usa fecha EXACTA (no un rango de tolerancia) para
-# evitar mezclar transacciones de fechas distintas bajo una misma
-# referencia generica (ej. la referencia "3110" se repite cientos de
-# veces en dias distintos en los datos reales); esto mantiene el
-# enriquecimiento seguro y acotado.
+#     Fila 1 (posicion 1 del doc 1400081553) -> Candidatos_Conciliacion:
+#         "1400081553 (DZ=40) | 100855489 (CB=50)"
+#     Fila 2 (posicion 2) -> "1400081553 (DZ=40) | 100859704 (CB=50)"
+#     Fila 3 (posicion 3) -> "1400081553 (DZ=40) | 100855686 (CB=50)"
+#     Fila 4 (posicion 4) -> (sin candidato disponible) -> EN BLANCO
+#     Fila 5 (posicion 5) -> (sin candidato disponible) -> EN BLANCO
+#     Fila 6 (posicion 6) -> "1400081553 (DZ=40) | 100855136 (CB=50)"
 #
-# Todo lo demas es identico a v16: motor de conciliacion completo
+#   Es decir: EMPAREJAMIENTO SECUENCIAL 1 A 1 (FIFO, por orden de
+#   aparicion en el archivo original), UN SOLO CANDIDATO POR FILA, y
+#   las posiciones sobrantes (cuando un lado tiene mas filas que el
+#   otro) quedan con la columna O VACIA - exactamente como se ve en la
+#   captura de referencia del usuario.
+#
+# COMO SE IMPLEMENTA (paso final, despues de que el motor ya resolvio
+# los niveles 1, 1B, 1C, 2 y 3 normalmente):
+#
+#   1. Se agrupa por 'Grupo_Ampliado_Key' = banco + fecha EXACTA +
+#      periodo + referencia/asignacion limpia (segun el lado), SIN
+#      incluir el importe en la llave (para permitir valores distintos
+#      entre posiciones, como pidio el usuario: "conciliar todos los
+#      valores cuando se repiten muchas posiciones con diferentes
+#      valores").
+#   2. Dentro de cada grupo, se toman UNICAMENTE las filas que SIGAN
+#      con Candidatos_Conciliacion VACIA (para no tocar ni desordenar
+#      los pares ya confirmados como "Conciliado - Cruce exacto" por
+#      los niveles anteriores, que ya tienen su candidato correcto y
+#      especifico).
+#   3. El lado 40 y el lado 50 de esas filas restantes se ordenan por
+#      ID_Temp (orden original de aparicion en el archivo = "el orden
+#      del documento que se repite").
+#   4. Se empatan POSICION A POSICION (indice i del lado 40 con indice i
+#      del lado 50). Cada par escribe UN SOLO candidato especifico en
+#      Candidatos_Conciliacion de AMBAS filas del par.
+#   5. Las posiciones que sobran (cuando un lado tiene mas elementos que
+#      el otro) quedan con Candidatos_Conciliacion VACIA - no se rellena
+#      con nada, igual que en la captura de referencia.
+#
+# Todo lo demas es identico a v16/v17: motor de conciliacion completo
 # (periodo obligatorio, tope 9 dias, banco, importe, distribuidora,
-# NEQUI, gate unico de seguridad), columnas visibles A..O + U, paleta
-# de 5 colores, y exportacion blindada contra "IndexError: At least one
-# sheet must be visible".
+# NEQUI, gate unico de seguridad para los niveles 1-3), columnas
+# visibles A..O + U, paleta de 5 colores, y exportacion blindada contra
+# "IndexError: At least one sheet must be visible".
 #
-# Ejecutar con: streamlit run app_conciliacion_v17_columna_O_completa.py
+# Ejecutar con: streamlit run app_conciliacion_v18_fifo_posicional.py
 
 import streamlit as st
 import pandas as pd
@@ -75,8 +82,8 @@ st.title("🏦 Conciliación Automatizada 🤖")
 st.write("Sube tu archivo consolidado.")
 st.caption(
     "Vista simplificada: columnas originales + Estado, Comentario, Candidatos y Distribuidora. "
-    "La columna Candidatos_Conciliacion ahora lista TODOS los candidatos del grupo, "
-    "sin importar su estado, para poder filtrar por documento y conciliar manualmente."
+    "La columna Candidatos_Conciliacion muestra UN candidato especifico por fila (emparejamiento "
+    "secuencial FIFO), no una lista de todos los posibles."
 )
 
 with st.expander("⚙️ Parámetros de tolerancia para sugerencias (alertas)"):
@@ -430,33 +437,26 @@ if archivo_subido is not None:
                         ):
                             usados_global.update([ida, idb])
 
-            com_r1_multi = {}
-            for c in (c1, c2, c3):
-                for _, r in c.iterrows():
-                    for lado, id_col, clave_otra in [('_40', 'ID_Temp_40', '50'), ('_50', 'ID_Temp_50', '40')]:
-                        tid = r[id_col]
-                        if tid in ind_r1_multi and tid not in usados_global:
-                            fila_tid = df.loc[df['ID_Temp'] == tid].iloc[0]
-                            banco_g = fila_tid[col_banco]
-                            imp_g = fila_tid['Abs_Importe']
-                            fecha_g = fila_tid[col_fecha]
-                            ref_g = fila_tid[col_referencia]
-                            periodo_g = fila_tid['Periodo_Contable']
-                            candidatos = df[
-                                (df[col_banco] == banco_g) & (df['Abs_Importe'] == imp_g) &
-                                (df[col_fecha] == fecha_g) & (df[col_referencia] == ref_g) &
-                                (df['Periodo_Contable'] == periodo_g) & (df[col_clave] == clave_otra)
-                            ]
-                            docs_candidatos = resumen_docs(candidatos)
-                            n_pos = int(fila_tid['Posiciones_Mismo_Doc'])
-                            com_r1_multi[tid] = (
-                                f"⚠️ Mismo Doc. tiene {n_pos} posiciones idénticas dentro del mismo periodo "
-                                f"{periodo_g}. Candidatos reales en este grupo (misma fecha y periodo): {docs_candidatos}. "
-                                f"Verificar manualmente antes de conciliar."
-                            )
+            # NOTA: ya NO se escribe aqui un comentario "lista de candidatos"
+            # para ind_r1_multi. Esas filas quedan marcadas como pendientes
+            # de emparejamiento FIFO posicional, que se resuelve en el paso
+            # final (mas abajo), y ahi se les asigna UN candidato especifico
+            # por fila, en orden, o quedan en blanco si no hay suficientes.
             set_estado(ind_r1_multi - usados_global, 'Sugerencia fuerte - Doc. con posiciones múltiples (VERIFICAR)')
-            set_comentarios(com_r1_multi)
+            for tid in (ind_r1_multi - usados_global):
+                fila_tid = df.loc[df['ID_Temp'] == tid].iloc[0]
+                n_pos = int(fila_tid['Posiciones_Mismo_Doc'])
+                periodo_g = fila_tid['Periodo_Contable']
+                mask = df['ID_Temp'] == tid
+                anterior = str(df.loc[mask, 'Comentario'].iloc[0])
+                texto = (
+                    f"⚠️ Mismo Doc. tiene {n_pos} posiciones idénticas dentro del mismo periodo "
+                    f"{periodo_g}. Se asignará un candidato específico por posición (ver columna "
+                    f"Candidatos_Conciliacion); si no hay suficientes candidatos, quedará en blanco."
+                )
+                df.loc[mask, 'Comentario'] = texto if not anterior else anterior + " | " + texto
 
+            # 1B: Cruce exacto (Referencia Limpia)
             df_p0 = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
             df_p0['A_L'] = df_p0['Asignacion_Limpia']
             df_p0['R_L'] = df_p0['Referencia_Limpia']
@@ -483,8 +483,8 @@ if archivo_subido is not None:
                     n_pos_a = int(df.loc[df['ID_Temp'] == ida, 'Posiciones_Mismo_Doc'].iloc[0])
                     df.loc[df['ID_Temp'] == ida, 'Estado_Conciliacion'] = 'Sugerencia fuerte - Doc. con posiciones múltiples (VERIFICAR)'
                     df.loc[df['ID_Temp'] == idb, 'Estado_Conciliacion'] = 'Sugerencia fuerte - Doc. con posiciones múltiples (VERIFICAR)'
-                    df.loc[df['ID_Temp'] == ida, 'Comentario'] = f"⚠️ Mismo Doc. tiene {n_pos_a} posiciones idénticas (ref. limpia). Verificar manualmente."
-                    df.loc[df['ID_Temp'] == idb, 'Comentario'] = f"⚠️ Posiciones múltiples (ref. limpia). Verificar manualmente."
+                    df.loc[df['ID_Temp'] == ida, 'Comentario'] = f"⚠️ Mismo Doc. tiene {n_pos_a} posiciones idénticas (ref. limpia). Se asignará candidato por posición."
+                    df.loc[df['ID_Temp'] == idb, 'Comentario'] = f"⚠️ Posiciones múltiples (ref. limpia). Se asignará candidato por posición."
                     continue
                 if escribir_candidato(
                     ida, idb, 'Conciliado - Cruce exacto (Ref limpia)',
@@ -821,21 +821,16 @@ if archivo_subido is not None:
                 df.loc[sin_p & (df['Comentario'] == ''), 'Comentario'] = 'Sin coincidencia ni sugerencia que cumpla reglas de seguridad - revisión manual completa'
 
             # =========================================================
-            # *** NUEVO: ENRIQUECIMIENTO FINAL DE LA COLUMNA O ***
+            # *** NUEVO: EMPAREJAMIENTO FIFO POSICIONAL PARA LA COLUMNA O ***
             # -----------------------------------------------------------
-            # Se ejecuta DESPUES de todos los niveles de conciliacion.
-            # NO modifica Estado_Conciliacion. SOBRESCRIBE
-            # Candidatos_Conciliacion para que, dentro de cada grupo
-            # (banco + fecha EXACTA + periodo + referencia/asignacion
-            # limpia segun el lado 40/50), cada fila muestre TODAS las
-            # demas filas del grupo -sin exigir mismo importe-, cada una
-            # con su Estado_Conciliacion individual entre corchetes.
-            #
-            # Esto permite: filtrar por Nº de documento (columna B) O por
-            # texto en la columna O, y ver siempre el universo completo
-            # de candidatos de ese documento, independiente de si ya
-            # esta Conciliado, en Sugerencia, en Alerta o Pendiente, y
-            # aunque las posiciones tengan valores distintos entre si.
+            # Se aplica UNICAMENTE a las filas que sigan con
+            # Candidatos_Conciliacion vacio (no toca los pares ya resueltos
+            # de forma segura en los niveles anteriores). Agrupa por banco +
+            # fecha exacta + periodo + referencia/asignacion limpia del lado
+            # correspondiente (SIN exigir mismo importe), separa lado 40 y
+            # lado 50, los ordena por ID_Temp (orden original de aparicion =
+            # "el orden del documento que se repite"), y los empata 1 a 1.
+            # Las posiciones sobrantes de cualquier lado quedan en blanco.
             # =========================================================
             def valor_clave_lado(row):
                 if str(row[col_clave]) == '40':
@@ -853,32 +848,35 @@ if archivo_subido is not None:
                 valor = str(row['Valor_Clave_Lado']).strip()
                 if valor:
                     return f"{banco}|{periodo}|{fecha}|REF-{valor}"
-                return f"{banco}|{periodo}|{fecha}|DOC-{row[col_doc]}"
+                return None  # sin referencia utilizable: no se agrupa
 
             df['Grupo_Ampliado_Key'] = df.apply(clave_grupo_ampliado, axis=1)
 
-            def formato_candidato_completo(row):
-                d = str(int(row[col_doc])) if pd.notna(row[col_doc]) else ""
-                c = str(row[col_clase_doc]) if usar_ipcb and pd.notna(row.get(col_clase_doc)) else ""
-                k = str(row[col_clave])
-                imp = row[col_importe]
-                est = str(row['Estado_Conciliacion']).strip()
-                base = f"{d} ({c}={k})" if c and c.lower() != 'nan' else f"{d} (Clv {k})"
-                return f"{base} ${imp:,.0f} [{est}]"
+            pendientes_sin_candidato = df[
+                (df['Candidatos_Conciliacion'] == '') & df['Grupo_Ampliado_Key'].notna()
+            ].copy()
 
-            for _, grupo in df.groupby('Grupo_Ampliado_Key'):
-                if len(grupo) < 2:
+            for grupo_key, grupo_df in pendientes_sin_candidato.groupby('Grupo_Ampliado_Key'):
+                lado_40 = grupo_df[grupo_df[col_clave] == '40'].sort_values('ID_Temp')
+                lado_50 = grupo_df[grupo_df[col_clave] == '50'].sort_values('ID_Temp')
+
+                if lado_40.empty or lado_50.empty:
                     continue
-                grupo_ordenado = grupo.sort_values(col_doc)
-                filas_grupo = list(grupo_ordenado.iterrows())
-                for idx_pos, (idx_actual, fila_actual) in enumerate(filas_grupo):
-                    candidatos_otros = [
-                        formato_candidato_completo(fila_otro)
-                        for idx_otro_pos, (idx_otro, fila_otro) in enumerate(filas_grupo)
-                        if idx_otro_pos != idx_pos
-                    ]
-                    texto_grupo_completo = " | ".join(candidatos_otros)
-                    df.loc[df['ID_Temp'] == fila_actual['ID_Temp'], 'Candidatos_Conciliacion'] = texto_grupo_completo
+
+                n_pares = min(len(lado_40), len(lado_50))
+                for i in range(n_pares):
+                    fila_40 = lado_40.iloc[i]
+                    fila_50 = lado_50.iloc[i]
+                    id_40 = fila_40['ID_Temp']
+                    id_50 = fila_50['ID_Temp']
+
+                    texto_par = f"{formato_doc(id_40)} | {formato_doc(id_50)}"
+                    df.loc[df['ID_Temp'] == id_40, 'Candidatos_Conciliacion'] = texto_par
+                    df.loc[df['ID_Temp'] == id_50, 'Candidatos_Conciliacion'] = texto_par
+
+                # Las posiciones sobrantes (mas alla de n_pares en cualquier
+                # lado) quedan deliberadamente EN BLANCO en Candidatos_
+                # Conciliacion: no hay candidato real disponible para ellas.
 
             # =========================================================
             # SELECCIÓN DE COLUMNAS VISIBLES (A..O + U)
@@ -998,7 +996,7 @@ if archivo_subido is not None:
                         "Alertas / Diferencias",
                         "Reclasificar banco",
                         "Pendientes",
-                        "Filas con Candidatos_Conciliacion completo",
+                        "Filas con Candidatos_Conciliacion asignado",
                         "Filas excluidas (sin doc/clave)",
                         "Filas con posiciones múltiples",
                     ],
@@ -1043,7 +1041,7 @@ if archivo_subido is not None:
             # =========================================================
             # INTERFAZ
             # =========================================================
-            st.success("¡Conciliación Integral terminada! Columna O ahora lista TODOS los candidatos del grupo, independiente del estado.")
+            st.success("¡Conciliación Integral terminada! Columna O: un candidato específico por fila (orden FIFO posicional), en blanco cuando no hay pareja disponible.")
             if not cuadre_ok:
                 st.warning("⚠️ Revisa la pestaña DESCARTADAS, el total de filas no coincide.")
 
@@ -1053,7 +1051,7 @@ if archivo_subido is not None:
 
             n_multi = int(df_final['Tiene_Posiciones_Repetidas'].sum())
             if n_multi > 0:
-                st.warning(f"⚠️ Se detectaron {n_multi} filas con documentos de posiciones múltiples. Ahora la columna Candidatos_Conciliacion lista TODOS los candidatos del grupo (filtra por Nº de documento para verlos todos juntos).")
+                st.warning(f"⚠️ Se detectaron {n_multi} filas con documentos de posiciones múltiples. La columna Candidatos_Conciliacion ahora asigna UN candidato especifico por posición, en orden; las posiciones sin pareja disponible quedan en blanco.")
 
             st.markdown(f"""
 **Leyenda de colores (5 categorías):**
@@ -1063,11 +1061,10 @@ if archivo_subido is not None:
 - <span style="background-color:{COLOR_RECLASIFICAR}; padding:2px 8px;">Reclasificación de banco</span>
 - <span style="background-color:{COLOR_PENDIENTE}; padding:2px 8px; border:1px solid #ccc;">Pendiente / sin coincidencia</span>
 
-**Cómo usar la columna O (Candidatos_Conciliacion):** filtra por cualquier Nº de documento
-(columna B) o busca ese número dentro de la columna O; verás listados TODOS los candidatos
-reales del grupo (banco + fecha + periodo + referencia/asignación), con su importe y su
-Estado_Conciliacion individual entre corchetes — sin importar si ya están Conciliados, en
-Sugerencia, en Alerta o Pendientes, y aunque tengan valores diferentes entre sí.
+**Cómo leer la columna O (Candidatos_Conciliacion):** cada fila muestra UN candidato específico
+(el emparejado en orden de aparición dentro de su grupo banco+fecha+periodo+referencia). Si
+filtras por un Nº de documento repetido, verás cada posición con su pareja específica; las
+posiciones sin candidato disponible aparecerán en blanco.
 """, unsafe_allow_html=True)
 
             c1_, c2_, c3_, c4_, c5_ = st.columns(5)
