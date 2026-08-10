@@ -1,35 +1,54 @@
-# app_conciliacion_v16_fix_hoja_visible.py
+# app_conciliacion_v17_columna_O_completa.py
 #
-# FIX CRITICO sobre v15: "IndexError: At least one sheet must be visible".
+# FIX FUNCIONAL sobre v16: la columna O (Candidatos_Conciliacion) quedaba
+# VACIA para las filas marcadas como "Sugerencia fuerte - posiciones
+# multiples" (ver captura de pantalla: el comentario menciona "6
+# posiciones identicas" pero la columna O nunca se llenaba ahi). Esto
+# impedia filtrar por un Nº de documento y ver sus candidatos reales.
 #
-# CAUSA: pandas ExcelWriter (engine openpyxl) elimina la hoja por defecto
-# "Sheet" al crearse. Si por cualquier motivo NINGUNA hoja llega a
-# escribirse con exito dentro del bloque "with" (por ejemplo: b_unicos
-# vacio -> cero pestañas de banco; y ademas algun fallo silencioso al
-# aplicar .style.apply() sobre un DataFrame en un caso limite), el libro
-# de Excel queda con CERO hojas. openpyxl, al guardar, intenta encontrar
-# una hoja visible para marcarla como activa y, al no encontrar ninguna,
-# lanza IndexError("At least one sheet must be visible").
+# NUEVO OBJETIVO IMPLEMENTADO (pedido explicito del usuario):
+#   Si se filtra la columna O (o el Nº de documento) por, por ejemplo,
+#   1400081553, debe listar TODOS los candidatos reales a conciliar de
+#   ese grupo, SIN IMPORTAR el Estado_Conciliacion de cada fila
+#   (Conciliado, Sugerencia, Pendiente, Alerta...), y AUNQUE las
+#   posiciones repetidas tengan IMPORTES DIFERENTES entre si.
 #
-# CORRECCION (dos blindajes):
-#   1. Se escribe una hoja "RESUMEN" INCONDICIONAL y SIEMPRE PRIMERO, sin
-#      estilos ni condicionales que puedan fallar. Esto garantiza que el
-#      libro de Excel NUNCA quede vacio, sin importar que pase despues.
-#   2. Cada hoja posterior (NOVEDADES, REVISAR_POSICIONES_MULTIPLES, una
-#      por banco, DESCARTADAS) se escribe dentro de un try/except: si el
-#      formato con colores (Styler) falla por cualquier razon, se reintenta
-#      la MISMA hoja SIN estilos (solo datos). Si incluso eso falla, se
-#      registra el motivo como advertencia en pantalla y se continua con
-#      las demas hojas, en vez de abortar todo el proceso.
-#   3. Se evitan nombres de pestaña duplicados (Excel no permite dos hojas
-#      con el mismo nombre), agregando un sufijo numerico si es necesario.
+# COMO SE LOGRA:
+#   Se agrega un PASO FINAL UNICO de enriquecimiento (despues de que
+#   todos los niveles de conciliacion ya corrieron y ya fijaron
+#   Estado_Conciliacion). Este paso:
+#     1. Calcula una clave de grupo por fila: banco + fecha + periodo +
+#        (Referencia_Limpia si es lado credito=50, o Asignacion_Limpia
+#        si es lado debito=40, replicando la misma logica de cruce que
+#        ya usa el resto del motor en el bloque 1B). Esta clave NO
+#        incluye el importe, para que posiciones con distinto valor
+#        pero mismo banco/fecha/periodo/referencia queden en el mismo
+#        grupo.
+#     2. Para cada grupo con 2 o mas filas, sobrescribe la columna
+#        Candidatos_Conciliacion de CADA fila con la lista de TODAS
+#        LAS DEMAS filas del grupo (excluyendose a si misma), mostrando
+#        documento, clase/clave, importe y su Estado_Conciliacion
+#        individual entre corchetes.
+#     3. Esto NO cambia Estado_Conciliacion (la clasificacion automatica
+#        ya calculada por las reglas de seguridad se mantiene intacta);
+#        solo AMPLIA el contenido de la columna O para que sea una
+#        vista de "todos los candidatos posibles del grupo", util para
+#        filtrar y conciliar manualmente los casos de posiciones
+#        multiples con valores distintos.
 #
-# Todo lo demas es identico a v15: motor de conciliacion completo (periodo
-# obligatorio, tope 9 dias, banco, importe, distribuidora, NEQUI, gate
-# unico de seguridad para la columna O), columnas visibles A..O + U, y la
-# paleta de 5 colores actualizada.
+# La clave de grupo usa fecha EXACTA (no un rango de tolerancia) para
+# evitar mezclar transacciones de fechas distintas bajo una misma
+# referencia generica (ej. la referencia "3110" se repite cientos de
+# veces en dias distintos en los datos reales); esto mantiene el
+# enriquecimiento seguro y acotado.
 #
-# Ejecutar con: streamlit run app_conciliacion_v16_fix_hoja_visible.py
+# Todo lo demas es identico a v16: motor de conciliacion completo
+# (periodo obligatorio, tope 9 dias, banco, importe, distribuidora,
+# NEQUI, gate unico de seguridad), columnas visibles A..O + U, paleta
+# de 5 colores, y exportacion blindada contra "IndexError: At least one
+# sheet must be visible".
+#
+# Ejecutar con: streamlit run app_conciliacion_v17_columna_O_completa.py
 
 import streamlit as st
 import pandas as pd
@@ -55,8 +74,9 @@ st.markdown(hide_style, unsafe_allow_html=True)
 st.title("🏦 Conciliación Automatizada 🤖")
 st.write("Sube tu archivo consolidado.")
 st.caption(
-    "Vista simplificada: el Excel final muestra solo las columnas originales + "
-    "Estado, Comentario, Candidatos y Distribuidora. Máximo 5 colores para identificar novedades."
+    "Vista simplificada: columnas originales + Estado, Comentario, Candidatos y Distribuidora. "
+    "La columna Candidatos_Conciliacion ahora lista TODOS los candidatos del grupo, "
+    "sin importar su estado, para poder filtrar por documento y conciliar manualmente."
 )
 
 with st.expander("⚙️ Parámetros de tolerancia para sugerencias (alertas)"):
@@ -800,6 +820,69 @@ if archivo_subido is not None:
             else:
                 df.loc[sin_p & (df['Comentario'] == ''), 'Comentario'] = 'Sin coincidencia ni sugerencia que cumpla reglas de seguridad - revisión manual completa'
 
+            # =========================================================
+            # *** NUEVO: ENRIQUECIMIENTO FINAL DE LA COLUMNA O ***
+            # -----------------------------------------------------------
+            # Se ejecuta DESPUES de todos los niveles de conciliacion.
+            # NO modifica Estado_Conciliacion. SOBRESCRIBE
+            # Candidatos_Conciliacion para que, dentro de cada grupo
+            # (banco + fecha EXACTA + periodo + referencia/asignacion
+            # limpia segun el lado 40/50), cada fila muestre TODAS las
+            # demas filas del grupo -sin exigir mismo importe-, cada una
+            # con su Estado_Conciliacion individual entre corchetes.
+            #
+            # Esto permite: filtrar por Nº de documento (columna B) O por
+            # texto en la columna O, y ver siempre el universo completo
+            # de candidatos de ese documento, independiente de si ya
+            # esta Conciliado, en Sugerencia, en Alerta o Pendiente, y
+            # aunque las posiciones tengan valores distintos entre si.
+            # =========================================================
+            def valor_clave_lado(row):
+                if str(row[col_clave]) == '40':
+                    v = row['Asignacion_Limpia'] if row['Asignacion_Limpia'] else row['Referencia_Limpia']
+                else:
+                    v = row['Referencia_Limpia'] if row['Referencia_Limpia'] else row['Asignacion_Limpia']
+                return v
+
+            df['Valor_Clave_Lado'] = df.apply(valor_clave_lado, axis=1)
+
+            def clave_grupo_ampliado(row):
+                banco = str(row[col_banco]).strip()
+                periodo = str(row['Periodo_Contable']).strip()
+                fecha = str(row[col_fecha])
+                valor = str(row['Valor_Clave_Lado']).strip()
+                if valor:
+                    return f"{banco}|{periodo}|{fecha}|REF-{valor}"
+                return f"{banco}|{periodo}|{fecha}|DOC-{row[col_doc]}"
+
+            df['Grupo_Ampliado_Key'] = df.apply(clave_grupo_ampliado, axis=1)
+
+            def formato_candidato_completo(row):
+                d = str(int(row[col_doc])) if pd.notna(row[col_doc]) else ""
+                c = str(row[col_clase_doc]) if usar_ipcb and pd.notna(row.get(col_clase_doc)) else ""
+                k = str(row[col_clave])
+                imp = row[col_importe]
+                est = str(row['Estado_Conciliacion']).strip()
+                base = f"{d} ({c}={k})" if c and c.lower() != 'nan' else f"{d} (Clv {k})"
+                return f"{base} ${imp:,.0f} [{est}]"
+
+            for _, grupo in df.groupby('Grupo_Ampliado_Key'):
+                if len(grupo) < 2:
+                    continue
+                grupo_ordenado = grupo.sort_values(col_doc)
+                filas_grupo = list(grupo_ordenado.iterrows())
+                for idx_pos, (idx_actual, fila_actual) in enumerate(filas_grupo):
+                    candidatos_otros = [
+                        formato_candidato_completo(fila_otro)
+                        for idx_otro_pos, (idx_otro, fila_otro) in enumerate(filas_grupo)
+                        if idx_otro_pos != idx_pos
+                    ]
+                    texto_grupo_completo = " | ".join(candidatos_otros)
+                    df.loc[df['ID_Temp'] == fila_actual['ID_Temp'], 'Candidatos_Conciliacion'] = texto_grupo_completo
+
+            # =========================================================
+            # SELECCIÓN DE COLUMNAS VISIBLES (A..O + U)
+            # =========================================================
             columnas_visibles = columnas_originales + [
                 'Estado_Conciliacion', 'Comentario', 'Candidatos_Conciliacion', 'Distribuidora'
             ]
@@ -836,7 +919,7 @@ if archivo_subido is not None:
                 return [f'background-color: {COLOR_PENDIENTE}; color: black'] * len(row)
 
             # =========================================================
-            # *** NUEVO: EXPORTACIÓN BLINDADA (fix del IndexError) ***
+            # EXPORTACIÓN BLINDADA (fix del IndexError, de v16)
             # =========================================================
             output = io.BytesIO()
             b_unicos = [b for b in df_final[col_banco].unique() if str(b).strip().lower() not in ('', 'nan')]
@@ -877,11 +960,6 @@ if archivo_subido is not None:
             advertencias_export = []
 
             def escribir_hoja_segura(writer, df_hoja, nombre_hoja, con_estilo=True):
-                """
-                Escribe una hoja con try/except: si el estilo falla, reintenta
-                sin estilo. Si tambien falla, registra advertencia y continua
-                (nunca aborta el resto de la exportacion).
-                """
                 nombre_final = nombre_pestana_unico(nombre_hoja)
                 try:
                     if con_estilo and not df_hoja.empty:
@@ -903,16 +981,13 @@ if archivo_subido is not None:
 
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
 
-                # -----------------------------------------------------
-                # BLINDAJE 1: hoja RESUMEN incondicional, siempre primera.
-                # Garantiza que el libro nunca quede sin hojas visibles.
-                # -----------------------------------------------------
                 total_filas = len(df_final)
                 total_conciliadas = int(df_final['Estado_Conciliacion'].str.contains('Conciliado', na=False).sum())
                 total_pendientes = int((df_final['Estado_Conciliacion'] == 'Pendiente').sum())
                 total_alertas = int(df_final['Estado_Conciliacion'].str.contains('Alerta|Diferencia', case=False, na=False).sum())
                 total_verificar = int(df_final['Estado_Conciliacion'].str.contains('Sugerencia|FIFO|Verificar|Multiples|Múltiples|Soporte', case=False, na=False).sum())
                 total_reclasificar = int(df_final['Estado_Conciliacion'].str.contains('Reclasificación', case=False, na=False).sum())
+                total_con_candidatos = int((df_final['Candidatos_Conciliacion'] != '').sum())
 
                 resumen_df = pd.DataFrame({
                     "Métrica": [
@@ -923,6 +998,7 @@ if archivo_subido is not None:
                         "Alertas / Diferencias",
                         "Reclasificar banco",
                         "Pendientes",
+                        "Filas con Candidatos_Conciliacion completo",
                         "Filas excluidas (sin doc/clave)",
                         "Filas con posiciones múltiples",
                     ],
@@ -934,6 +1010,7 @@ if archivo_subido is not None:
                         total_alertas,
                         total_reclasificar,
                         total_pendientes,
+                        total_con_candidatos,
                         filas_excluidas,
                         int(df_final['Tiene_Posiciones_Repetidas'].sum()),
                     ]
@@ -941,9 +1018,6 @@ if archivo_subido is not None:
                 resumen_df.to_excel(writer, index=False, sheet_name='RESUMEN')
                 nombres_pestanas_usados.add('RESUMEN')
 
-                # -----------------------------------------------------
-                # BLINDAJE 2: cada hoja posterior con try/except propio.
-                # -----------------------------------------------------
                 df_nov = df_final[~df_final['Estado_Conciliacion'].str.startswith('Conciliado', na=False)].copy()
                 df_nov = df_nov[df_nov[col_clave] == '40']
                 if not df_nov.empty:
@@ -969,7 +1043,7 @@ if archivo_subido is not None:
             # =========================================================
             # INTERFAZ
             # =========================================================
-            st.success("¡Conciliación Integral terminada! Exportación blindada: siempre habrá al menos la hoja RESUMEN.")
+            st.success("¡Conciliación Integral terminada! Columna O ahora lista TODOS los candidatos del grupo, independiente del estado.")
             if not cuadre_ok:
                 st.warning("⚠️ Revisa la pestaña DESCARTADAS, el total de filas no coincide.")
 
@@ -979,7 +1053,7 @@ if archivo_subido is not None:
 
             n_multi = int(df_final['Tiene_Posiciones_Repetidas'].sum())
             if n_multi > 0:
-                st.warning(f"⚠️ Se detectaron {n_multi} filas con documentos de posiciones múltiples. Revisa REVISAR_POSICIONES_MULTIPLES antes de dar por bueno el cruce automático.")
+                st.warning(f"⚠️ Se detectaron {n_multi} filas con documentos de posiciones múltiples. Ahora la columna Candidatos_Conciliacion lista TODOS los candidatos del grupo (filtra por Nº de documento para verlos todos juntos).")
 
             st.markdown(f"""
 **Leyenda de colores (5 categorías):**
@@ -988,6 +1062,12 @@ if archivo_subido is not None:
 - <span style="background-color:{COLOR_ALERTA}; padding:2px 8px;">Alerta de fecha o diferencia de valor</span>
 - <span style="background-color:{COLOR_RECLASIFICAR}; padding:2px 8px;">Reclasificación de banco</span>
 - <span style="background-color:{COLOR_PENDIENTE}; padding:2px 8px; border:1px solid #ccc;">Pendiente / sin coincidencia</span>
+
+**Cómo usar la columna O (Candidatos_Conciliacion):** filtra por cualquier Nº de documento
+(columna B) o busca ese número dentro de la columna O; verás listados TODOS los candidatos
+reales del grupo (banco + fecha + periodo + referencia/asignación), con su importe y su
+Estado_Conciliacion individual entre corchetes — sin importar si ya están Conciliados, en
+Sugerencia, en Alerta o Pendientes, y aunque tengan valores diferentes entre sí.
 """, unsafe_allow_html=True)
 
             c1_, c2_, c3_, c4_, c5_ = st.columns(5)
