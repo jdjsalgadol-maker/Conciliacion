@@ -22,7 +22,7 @@ st.title("🏦 Conciliacion Automatizada 🤖")
 st.write("Sube tu archivo consolidado.")
 
 with st.expander("⚙️ Parametros de tolerancia para sugerencias (alertas)"):
-    tol_dias = st.slider("Dias maximos de diferencia para alertar 'error de fecha' (mismo periodo)", 1, 15, 3)
+    st.caption("📅 Regla no negociable: solo se sugieren cruces por fecha dentro del **mismo periodo contable** y con un máximo de **9 días** de diferencia en Fecha valor. Fuera de ese rango, el documento no se empareja aquí.")
     tol_valor_abs = st.number_input("Diferencia absoluta maxima de valor para alertar ($)", min_value=1, value=5000, step=100)
     tol_valor_pct = st.number_input("Diferencia relativa maxima de valor para alertar (%)", min_value=0.01, value=0.5, step=0.01) / 100
     multiplo_redondo = st.selectbox("Multiplo para considerar un valor 'redondo' (alta ambiguedad)", [50000, 100000], index=1)
@@ -688,44 +688,43 @@ if archivo_subido is not None:
             df_5n = df_v[df_v[col_clave] == '50'].copy()
 
             # 3A: Alertas de Fecha
+            # =========================================================
+            # REGLA NO NEGOCIABLE: solo se puede emparejar (Estado_Conciliacion
+            # + Candidatos_Conciliacion) documentos del MISMO periodo contable,
+            # y con un maximo absoluto de 9 dias de diferencia en Fecha valor.
+            # Antes esto no tenia tope: podia emparejar documentos de meses
+            # distintos (se vio un caso real de 92 dias, mayo vs agosto) solo
+            # por compartir banco+importe+digitos de referencia. Ahora, fuera
+            # de ese rango, el documento NO se toca aqui (sigue disponible
+            # para 3B/3C, o queda Pendiente) en vez de emparejarse mal.
+            # =========================================================
+            LIMITE_DIAS_MISMO_PERIODO = 9
+
             sA = pd.merge(df_4n, df_5n, on=[col_banco, 'Abs_Importe', 'Regex'], suffixes=('_40', '_50'))
             sA['Dif'] = (sA['Fecha_Calc_40'] - sA['Fecha_Calc_50']).dt.days.abs()
-            sA = sA[sA['Dif'] > 0].sort_values('Dif').drop_duplicates('ID_Temp_40').drop_duplicates('ID_Temp_50')
+            sA['Per40'] = list(zip(sA['Fecha_Calc_40'].dt.year, sA['Fecha_Calc_40'].dt.month))
+            sA['Per50'] = list(zip(sA['Fecha_Calc_50'].dt.year, sA['Fecha_Calc_50'].dt.month))
+            sA['MismoPeriodo'] = sA['Per40'] == sA['Per50']
+
+            # Filtro no negociable: mismo periodo Y maximo 9 dias. Todo lo demas
+            # se descarta de este nivel (no se empareja, ni se muestra como candidato).
+            sA = sA[(sA['Dif'] > 0) & (sA['Dif'] <= LIMITE_DIAS_MISMO_PERIODO) & (sA['MismoPeriodo'])]
+            sA = sA.sort_values('Dif').drop_duplicates('ID_Temp_40').drop_duplicates('ID_Temp_50')
 
             ind_A = set(); com_A = {}
             for _, r in sA.iterrows():
-                f40, f50 = r['Fecha_Calc_40'], r['Fecha_Calc_50']
                 dif = int(r['Dif'])
-                
-                per_40 = (f40.year, f40.month)
-                per_50 = (f50.year, f50.month)
-                mismo_periodo = (per_40 == per_50)
 
-                if dif <= tol_dias:
-                    estado = 'Diferencia Fecha (Mismo Periodo)' if mismo_periodo else 'Diferencia Fecha (DIFERENTE PERIODO)'
-                elif mismo_periodo:
-                    estado = 'Diferencia Fecha (Mismo Periodo)'
-                else:
-                    estado = 'Diferencia Fecha (Mes no corresponde)'
+                # Ya filtrado a mismo periodo y <= 9 dias: siempre es un texto de
+                # alerta "mismo periodo", nunca un cruce de periodo distinto.
+                estado = 'Diferencia Fecha (Mismo Periodo)'
 
                 ids = [r['ID_Temp_40'], r['ID_Temp_50']]
                 ind_A.update(ids)
                 df.loc[df['ID_Temp'].isin(ids), 'Estado_Conciliacion'] = estado
-                
-                if not mismo_periodo:
-                    if per_50 < per_40:
-                        txt_40 = "ALERTA: Conciliar pero periodo anterior (pago cruza con doc antiguo)."
-                        txt_50 = "ALERTA: Conciliado con un pago en periodo posterior."
-                    else:
-                        txt_40 = "ALERTA: Cruzado con documento emitido en periodo posterior."
-                        txt_50 = "ALERTA: Conciliar pero periodo anterior (doc cruza con pago antiguo)."
-                        
-                    com_A[r['ID_Temp_40']] = f"{txt_40} Dif: {dif} dia(s). Doc: {int(r[col_doc+'_50'])}"
-                    com_A[r['ID_Temp_50']] = f"{txt_50} Dif: {dif} dia(s). Doc: {int(r[col_doc+'_40'])}"
-                else:
-                    com_A[r['ID_Temp_40']] = f"Difiere {dif} dia(s) (mismo periodo). Doc: {int(r[col_doc+'_50'])}"
-                    com_A[r['ID_Temp_50']] = f"Difiere {dif} dia(s) (mismo periodo). Doc: {int(r[col_doc+'_40'])}"
-                
+                com_A[r['ID_Temp_40']] = f"Difiere {dif} dia(s) (mismo periodo, dentro del limite de {LIMITE_DIAS_MISMO_PERIODO} dias). Doc: {int(r[col_doc+'_50'])}"
+                com_A[r['ID_Temp_50']] = f"Difiere {dif} dia(s) (mismo periodo, dentro del limite de {LIMITE_DIAS_MISMO_PERIODO} dias). Doc: {int(r[col_doc+'_40'])}"
+
                 registrar_candidatos([r['ID_Temp_40'], r['ID_Temp_50']])
             set_comentarios(com_A)
 
