@@ -1,28 +1,42 @@
-# app_conciliacion_v15_paleta_actualizada.py
+# app_conciliacion_v16_fix_hoja_visible.py
 #
-# Idéntico a v14 (vista simplificada A..O + U). ÚNICO CAMBIO: los codigos
-# hexadecimales de la paleta de 5 colores, segun lo solicitado:
+# FIX CRITICO sobre v15: "IndexError: At least one sheet must be visible".
 #
-#   - Verde       -> #C5D9F1  (Conciliado: match seguro, automatico)
-#   - Amarillo    -> #A9D18E  (Verificar / Sugerencia: FIFO, multiples,
-#                    posiciones repetidas, solicitar soporte)
-#   - Naranja     -> #FDEBD0  (Alerta de fecha / diferencia de valor)
-#   - Lila        -> #D7BDE2  (Reclasificacion de banco)
-#   - Gris claro  -> #FFFFFF  (Pendiente / sin coincidencia)
+# CAUSA: pandas ExcelWriter (engine openpyxl) elimina la hoja por defecto
+# "Sheet" al crearse. Si por cualquier motivo NINGUNA hoja llega a
+# escribirse con exito dentro del bloque "with" (por ejemplo: b_unicos
+# vacio -> cero pestañas de banco; y ademas algun fallo silencioso al
+# aplicar .style.apply() sobre un DataFrame en un caso limite), el libro
+# de Excel queda con CERO hojas. openpyxl, al guardar, intenta encontrar
+# una hoja visible para marcarla como activa y, al no encontrar ninguna,
+# lanza IndexError("At least one sheet must be visible").
 #
-# Ninguna regla de negocio cambia: periodo obligatorio, tope 9 dias para
-# alertas de texto, banco, importe, distribuidora, NEQUI, gate unico de
-# seguridad para la columna O (Candidatos_Conciliacion), fix del KeyError
-# 'Referencia' de v13, y columnas visibles A..L + Estado (M) + Comentario
-# (N) + Candidatos_Conciliacion (O) + Distribuidora (U).
+# CORRECCION (dos blindajes):
+#   1. Se escribe una hoja "RESUMEN" INCONDICIONAL y SIEMPRE PRIMERO, sin
+#      estilos ni condicionales que puedan fallar. Esto garantiza que el
+#      libro de Excel NUNCA quede vacio, sin importar que pase despues.
+#   2. Cada hoja posterior (NOVEDADES, REVISAR_POSICIONES_MULTIPLES, una
+#      por banco, DESCARTADAS) se escribe dentro de un try/except: si el
+#      formato con colores (Styler) falla por cualquier razon, se reintenta
+#      la MISMA hoja SIN estilos (solo datos). Si incluso eso falla, se
+#      registra el motivo como advertencia en pantalla y se continua con
+#      las demas hojas, en vez de abortar todo el proceso.
+#   3. Se evitan nombres de pestaña duplicados (Excel no permite dos hojas
+#      con el mismo nombre), agregando un sufijo numerico si es necesario.
 #
-# Ejecutar con: streamlit run app_conciliacion_v15_paleta_actualizada.py
+# Todo lo demas es identico a v15: motor de conciliacion completo (periodo
+# obligatorio, tope 9 dias, banco, importe, distribuidora, NEQUI, gate
+# unico de seguridad para la columna O), columnas visibles A..O + U, y la
+# paleta de 5 colores actualizada.
+#
+# Ejecutar con: streamlit run app_conciliacion_v16_fix_hoja_visible.py
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import io
 import re
+from datetime import datetime
 
 # ============================================================
 # CONFIGURACIÓN DE LA PÁGINA
@@ -57,14 +71,11 @@ with st.expander("⚙️ Parámetros de tolerancia para sugerencias (alertas)"):
 TOPE_DIAS_ALERTA = 9
 tol_dias = min(tol_dias, TOPE_DIAS_ALERTA)
 
-# ---------------------------------------------------------
-# NUEVA PALETA (unico cambio respecto a v14)
-# ---------------------------------------------------------
-COLOR_CONCILIADO = "#C5D9F1"      # Verde (etiqueta) -> match seguro/automatico
-COLOR_VERIFICAR = "#A9D18E"       # Amarillo (etiqueta) -> Sugerencia/FIFO/multiples
-COLOR_ALERTA = "#FDEBD0"          # Naranja -> alerta de fecha / diferencia de valor
-COLOR_RECLASIFICAR = "#D7BDE2"    # Lila -> reclasificacion de banco
-COLOR_PENDIENTE = "#FFFFFF"       # Gris claro (etiqueta) -> pendiente / sin coincidencia
+COLOR_CONCILIADO = "#C5D9F1"
+COLOR_VERIFICAR = "#A9D18E"
+COLOR_ALERTA = "#FDEBD0"
+COLOR_RECLASIFICAR = "#D7BDE2"
+COLOR_PENDIENTE = "#FFFFFF"
 
 archivo_subido = st.file_uploader("Selecciona el archivo de Excel o CSV", type=['xlsx', 'csv'])
 
@@ -174,25 +185,16 @@ if archivo_subido is not None:
             df['Comentario'] = ''
             df['Candidatos_Conciliacion'] = ''
 
-            # =========================================================
-            # PERIODO CONTABLE (REGLA NO NEGOCIABLE)
-            # =========================================================
             fecha_contable_calc = pd.to_datetime(df[col_fecha_contable], errors='coerce')
             df['Periodo_Contable'] = fecha_contable_calc.dt.to_period('M').astype(str)
             df.loc[fecha_contable_calc.isna(), 'Periodo_Contable'] = 'SIN_FECHA_CONTABLE'
 
-            # =========================================================
-            # DETECCIÓN DE DOCUMENTOS CON POSICIONES MÚLTIPLES
-            # =========================================================
             grp_multi = [col_banco, 'Abs_Importe', col_fecha, col_referencia, 'Periodo_Contable']
             df['Posiciones_Mismo_Doc'] = df.groupby([col_doc] + grp_multi)[col_doc].transform('count')
             df['Total_Posiciones_Grupo'] = df.groupby(grp_multi)[col_doc].transform('count')
             df['Docs_Unicos_Grupo'] = df.groupby(grp_multi)[col_doc].transform('nunique')
             df['Tiene_Posiciones_Repetidas'] = (df['Posiciones_Mismo_Doc'] > 1)
 
-            # =========================================================
-            # CLASIFICACIÓN DE DISTRIBUIDORAS Y HOMOLOGACIÓN (IP/CB)
-            # =========================================================
             mapeo_referencias_dist = {
                 "11760923": "Dist Acopi", "11761277": "Dist Acopi", "11761293": "Dist Acopi",
                 "11761327": "Dist Acopi", "11761301": "Dist Acopi", "12273934": "Dist Acopi",
@@ -281,9 +283,6 @@ if archivo_subido is not None:
             df['Referencia_Limpia'] = df[col_referencia].apply(limpiar_numero)
             df['Asignacion_Limpia'] = df[col_asignacion].apply(limpiar_numero)
 
-            # =========================================================
-            # FUNCIONES DE ASIGNACIÓN
-            # =========================================================
             def set_estado(indices, estado):
                 if indices:
                     df.loc[df['ID_Temp'].isin(indices), 'Estado_Conciliacion'] = estado
@@ -298,9 +297,6 @@ if archivo_subido is not None:
             def es_valor_redondo(v):
                 return (v % multiplo_redondo == 0) and v > 0
 
-            # =========================================================
-            # GATE ÚNICO DE SEGURIDAD PARA LA COLUMNA O
-            # =========================================================
             def candidato_seguro(id_a, id_b, exigir_mismo_importe=True):
                 ra = df.loc[df['ID_Temp'] == id_a].iloc[0]
                 rb = df.loc[df['ID_Temp'] == id_b].iloc[0]
@@ -441,7 +437,6 @@ if archivo_subido is not None:
             set_estado(ind_r1_multi - usados_global, 'Sugerencia fuerte - Doc. con posiciones múltiples (VERIFICAR)')
             set_comentarios(com_r1_multi)
 
-            # 1B: Cruce exacto (Referencia Limpia)
             df_p0 = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
             df_p0['A_L'] = df_p0['Asignacion_Limpia']
             df_p0['R_L'] = df_p0['Referencia_Limpia']
@@ -477,7 +472,6 @@ if archivo_subido is not None:
                 ):
                     usados_global.update([ida, idb])
 
-            # 1C: Cruce Múltiple Datáfonos M:N (IP vs CB)
             ind_1c_ipcb = set()
             if usar_ipcb:
                 df_p_ipcb = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
@@ -529,7 +523,7 @@ if archivo_subido is not None:
                             df.loc[mask, 'Comentario'] = f"{txt} Docs relacionados: {otros}"
 
             # =========================================================
-            # NIVEL 2: SECTORIZACIÓN, CRUCE ÚNICO Y VALOR REDONDO
+            # NIVEL 2
             # =========================================================
             df_p1d = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
             if usar_ipcb:
@@ -655,7 +649,7 @@ if archivo_subido is not None:
             set_comentarios(com_amb)
 
             # =========================================================
-            # NIVEL 3: ALERTAS DE FECHA, BANCO Y VALOR
+            # NIVEL 3
             # =========================================================
             df_pend = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
             df_pend = df_pend[~df_pend['ID_Temp'].isin(usados_global)]
@@ -798,9 +792,6 @@ if archivo_subido is not None:
                     set_estado(ind_D, 'Diferencia en valor (NEQUI)')
                     set_comentarios(com_D)
 
-            # =========================================================
-            # PENDIENTES FINALES
-            # =========================================================
             sin_p = df['Estado_Conciliacion'] == 'Pendiente'
             if usar_ipcb:
                 es_ip = df[col_clase_doc].astype(str).str.upper() == 'IP'
@@ -809,9 +800,6 @@ if archivo_subido is not None:
             else:
                 df.loc[sin_p & (df['Comentario'] == ''), 'Comentario'] = 'Sin coincidencia ni sugerencia que cumpla reglas de seguridad - revisión manual completa'
 
-            # =========================================================
-            # SELECCIÓN DE COLUMNAS VISIBLES (A..O + U)
-            # =========================================================
             columnas_visibles = columnas_originales + [
                 'Estado_Conciliacion', 'Comentario', 'Candidatos_Conciliacion', 'Distribuidora'
             ]
@@ -820,17 +808,11 @@ if archivo_subido is not None:
                 cols_presentes = [c for c in columnas_visibles if c in df_cualquiera.columns]
                 return df_cualquiera[cols_presentes].copy()
 
-            # =========================================================
-            # LIMPIEZA FINAL Y FORMATO
-            # =========================================================
             cuadre_ok = filas_antes == (len(df) + len(filas_descartadas))
             df_final = df.drop(columns=['ID_Temp', 'Abs_Importe', 'Fecha_Calc'], errors='ignore')
             for col_f in [c for c in df_final.columns if 'fe.' in c.lower() or 'fecha' in c.lower() or 'fe-' in c.lower()]:
                 df_final[col_f] = pd.to_datetime(df_final[col_f], errors='coerce').dt.strftime('%d/%m/%Y')
 
-            # ---------------------------------------------------------
-            # PALETA DE 5 COLORES ACTUALIZADA (unico cambio vs v14)
-            # ---------------------------------------------------------
             def resaltar_conciliados(row):
                 est = str(row['Estado_Conciliacion']).strip().lower()
 
@@ -854,7 +836,7 @@ if archivo_subido is not None:
                 return [f'background-color: {COLOR_PENDIENTE}; color: black'] * len(row)
 
             # =========================================================
-            # EXPORTACIÓN (todas las pestañas usan vista_simplificada)
+            # *** NUEVO: EXPORTACIÓN BLINDADA (fix del IndexError) ***
             # =========================================================
             output = io.BytesIO()
             b_unicos = [b for b in df_final[col_banco].unique() if str(b).strip().lower() not in ('', 'nan')]
@@ -877,43 +859,123 @@ if archivo_subido is not None:
 
             b_unicos = sorted(b_unicos, key=get_bank_order)
 
+            nombres_pestanas_usados = set()
+
+            def nombre_pestana_unico(nombre_base):
+                nombre = re.sub(r'[\\/*?:\[\]]', '-', str(nombre_base)[:31])
+                if not nombre.strip() or nombre.lower() == 'nan':
+                    nombre = "Sin_Banco"
+                original = nombre
+                contador = 1
+                while nombre in nombres_pestanas_usados:
+                    sufijo = f"_{contador}"
+                    nombre = original[: 31 - len(sufijo)] + sufijo
+                    contador += 1
+                nombres_pestanas_usados.add(nombre)
+                return nombre
+
+            advertencias_export = []
+
+            def escribir_hoja_segura(writer, df_hoja, nombre_hoja, con_estilo=True):
+                """
+                Escribe una hoja con try/except: si el estilo falla, reintenta
+                sin estilo. Si tambien falla, registra advertencia y continua
+                (nunca aborta el resto de la exportacion).
+                """
+                nombre_final = nombre_pestana_unico(nombre_hoja)
+                try:
+                    if con_estilo and not df_hoja.empty:
+                        df_hoja.style.apply(
+                            lambda row: resaltar_conciliados(df_hoja.loc[row.name]), axis=1
+                        ).to_excel(writer, index=False, sheet_name=nombre_final)
+                    else:
+                        df_hoja.to_excel(writer, index=False, sheet_name=nombre_final)
+                except Exception as e_estilo:
+                    try:
+                        df_hoja.to_excel(writer, index=False, sheet_name=nombre_final)
+                        advertencias_export.append(
+                            f"Hoja '{nombre_final}': se escribió sin colores por un error de formato ({e_estilo})."
+                        )
+                    except Exception as e_fatal:
+                        advertencias_export.append(
+                            f"Hoja '{nombre_final}': no se pudo escribir ({e_fatal})."
+                        )
+
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
+
+                # -----------------------------------------------------
+                # BLINDAJE 1: hoja RESUMEN incondicional, siempre primera.
+                # Garantiza que el libro nunca quede sin hojas visibles.
+                # -----------------------------------------------------
+                total_filas = len(df_final)
+                total_conciliadas = int(df_final['Estado_Conciliacion'].str.contains('Conciliado', na=False).sum())
+                total_pendientes = int((df_final['Estado_Conciliacion'] == 'Pendiente').sum())
+                total_alertas = int(df_final['Estado_Conciliacion'].str.contains('Alerta|Diferencia', case=False, na=False).sum())
+                total_verificar = int(df_final['Estado_Conciliacion'].str.contains('Sugerencia|FIFO|Verificar|Multiples|Múltiples|Soporte', case=False, na=False).sum())
+                total_reclasificar = int(df_final['Estado_Conciliacion'].str.contains('Reclasificación', case=False, na=False).sum())
+
+                resumen_df = pd.DataFrame({
+                    "Métrica": [
+                        "Fecha de procesamiento",
+                        "Total filas procesadas",
+                        "Conciliadas",
+                        "Verificar / Sugerencia",
+                        "Alertas / Diferencias",
+                        "Reclasificar banco",
+                        "Pendientes",
+                        "Filas excluidas (sin doc/clave)",
+                        "Filas con posiciones múltiples",
+                    ],
+                    "Valor": [
+                        datetime.now().strftime('%d/%m/%Y %H:%M'),
+                        total_filas,
+                        total_conciliadas,
+                        total_verificar,
+                        total_alertas,
+                        total_reclasificar,
+                        total_pendientes,
+                        filas_excluidas,
+                        int(df_final['Tiene_Posiciones_Repetidas'].sum()),
+                    ]
+                })
+                resumen_df.to_excel(writer, index=False, sheet_name='RESUMEN')
+                nombres_pestanas_usados.add('RESUMEN')
+
+                # -----------------------------------------------------
+                # BLINDAJE 2: cada hoja posterior con try/except propio.
+                # -----------------------------------------------------
                 df_nov = df_final[~df_final['Estado_Conciliacion'].str.startswith('Conciliado', na=False)].copy()
                 df_nov = df_nov[df_nov[col_clave] == '40']
-
                 if not df_nov.empty:
                     df_nov = df_nov.sort_values(by=['Estado_Conciliacion', col_importe])
-                    vista_simplificada(df_nov).style.apply(
-                        lambda row: resaltar_conciliados(df_nov.loc[row.name]), axis=1
-                    ).to_excel(writer, index=False, sheet_name='NOVEDADES_Y_PENDIENTES_40')
+                    escribir_hoja_segura(writer, vista_simplificada(df_nov), 'NOVEDADES_Y_PENDIENTES_40', con_estilo=True)
                 else:
-                    pd.DataFrame(columns=columnas_visibles).to_excel(writer, index=False, sheet_name='NOVEDADES_Y_PENDIENTES_40')
+                    escribir_hoja_segura(writer, pd.DataFrame(columns=columnas_visibles), 'NOVEDADES_Y_PENDIENTES_40', con_estilo=False)
 
                 df_multi = df_final[df_final['Tiene_Posiciones_Repetidas'] == True].copy()
                 if not df_multi.empty:
                     df_multi = df_multi.sort_values(by=[col_banco, col_importe, col_fecha, col_referencia, col_doc])
-                    vista_simplificada(df_multi).style.apply(
-                        lambda row: resaltar_conciliados(df_multi.loc[row.name]), axis=1
-                    ).to_excel(writer, index=False, sheet_name='REVISAR_POSICIONES_MULTIPLES')
+                    escribir_hoja_segura(writer, vista_simplificada(df_multi), 'REVISAR_POSICIONES_MULTIPLES', con_estilo=True)
 
                 for banco in b_unicos:
                     df_b = df_final[df_final[col_banco] == banco].copy().sort_values(by=col_importe, ascending=True)
-                    n_pestana = re.sub(r'[\\/*?:\[\]]', '-', str(banco)[:31])
-                    if not n_pestana.strip() or n_pestana.lower() == 'nan':
-                        n_pestana = "Sin_Banco"
-                    vista_simplificada(df_b).style.apply(
-                        lambda row: resaltar_conciliados(df_b.loc[row.name]), axis=1
-                    ).to_excel(writer, index=False, sheet_name=n_pestana)
+                    if df_b.empty:
+                        continue
+                    escribir_hoja_segura(writer, vista_simplificada(df_b), str(banco), con_estilo=True)
 
                 if not filas_descartadas.empty:
-                    vista_simplificada(filas_descartadas).to_excel(writer, index=False, sheet_name='DESCARTADAS_SIN_DOC_O_CT')
+                    escribir_hoja_segura(writer, vista_simplificada(filas_descartadas), 'DESCARTADAS_SIN_DOC_O_CT', con_estilo=False)
 
             # =========================================================
             # INTERFAZ
             # =========================================================
-            st.success("¡Conciliación Integral terminada! Paleta actualizada y vista simplificada (A..O + Distribuidora).")
+            st.success("¡Conciliación Integral terminada! Exportación blindada: siempre habrá al menos la hoja RESUMEN.")
             if not cuadre_ok:
                 st.warning("⚠️ Revisa la pestaña DESCARTADAS, el total de filas no coincide.")
+
+            if advertencias_export:
+                for adv in advertencias_export:
+                    st.warning(f"⚠️ {adv}")
 
             n_multi = int(df_final['Tiene_Posiciones_Repetidas'].sum())
             if n_multi > 0:
