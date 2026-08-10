@@ -1,30 +1,33 @@
-# app_conciliacion_base_integrada_v13_fix_keyerror.py
+# app_conciliacion_v14_vista_simplificada.py
 #
-# FIX CRITICO sobre v12: el error "KeyError: 'Referencia'" se producia porque
-# los merges c2 y c3 (Nivel 1) cruzan Asignacion (lado 40) contra Referencia
-# (lado 50) con nombres de columna DISTINTOS en cada lado. Pandas, al no
-# encontrar una columna "Referencia" identica en ambos lados como llave
-# exacta, SUFIJA ambas copias a Referencia_40 / Referencia_50. El bloque de
-# "posiciones multiples" leia r[col_referencia] directo del resultado del
-# merge, lo cual solo existe sin sufijo cuando proviene de c1 (merge
-# simetrico por Referencia=Referencia). Cuando la fila viene de c2 o c3,
-# esa columna no existe sin sufijo -> KeyError.
+# Basado en v13 (fix del KeyError 'Referencia'). NINGUNA regla de negocio
+# cambia respecto a v13: periodo obligatorio, tope 9 dias, banco, importe,
+# distribuidora, NEQUI, gate unico de seguridad para la columna O, etc.
 #
-# Esto detenia el script ANTES de llegar al Nivel 2 (Cruce Unico), que es
-# donde se concilian los NEQUI de valor unico. Por eso parecia que la regla
-# NEQUI habia dejado de aplicar: el motor se caia antes de ejecutarla.
+# LO UNICO QUE CAMBIA es la CAPA DE PRESENTACION del Excel final, para
+# facilitar la lectura y revision de novedades:
 #
-# CORRECCION: el bloque de posiciones multiples ahora busca banco, importe,
-# fecha, referencia y periodo directamente en el DataFrame original 'df'
-# usando el ID_Temp (tid), en vez de leerlos de la fila fusionada 'r'. Esto
-# elimina por completo la ambiguedad de sufijos, sin importar de que merge
-# (c1, c2 o c3) provenga la fila.
+#   1. Columnas visibles: se recorta la salida a las columnas originales
+#      del archivo (A..L en un archivo tipico SAP) + Estado_Conciliacion
+#      (M) + Comentario (N) + Candidatos_Conciliacion (O) + Distribuidora
+#      (U). Se ocultan del Excel final las columnas tecnicas intermedias
+#      (Periodo_Contable, Posiciones_Mismo_Doc, Total_Posiciones_Grupo,
+#      Docs_Unicos_Grupo, Tiene_Posiciones_Repetidas) y las auxiliares
+#      finales (Es_Nequi, Referencia_Limpia, Asignacion_Limpia). Estas
+#      columnas SIGUEN calculandose y usandose internamente para las
+#      reglas y para filtrar la pestana de posiciones multiples; solo se
+#      excluyen al momento de escribir el Excel.
 #
-# Todo lo demas es identico a v12: base original completa + gate de
-# seguridad para la columna O (periodo, fecha <=9 dias, banco, importe,
-# distribuidora, referencia/asignacion, NEQUI).
+#   2. Paleta de colores reducida a 5 categorias, para que sea facil de
+#      identificar de un vistazo al revisar novedades:
+#         - Verde  (#C5D9F1): Conciliado (match seguro, automatico)
+#         - Amarillo (#A9D18E): Verificar / Sugerencia (FIFO, multiples,
+#           posiciones repetidas, solicitar soporte)
+#         - Naranja (#FDEBD0): Alerta de fecha / diferencia de valor
+#         - Lila (#D7BDE2): Reclasificacion de banco
+#         - Gris claro (#FFFFFF): Pendiente / sin coincidencia
 #
-# Ejecutar con: streamlit run app_conciliacion_base_integrada_v13_fix_keyerror.py
+# Ejecutar con: streamlit run app_conciliacion_v14_vista_simplificada.py
 
 import streamlit as st
 import pandas as pd
@@ -48,6 +51,10 @@ st.markdown(hide_style, unsafe_allow_html=True)
 
 st.title("🏦 Conciliación Automatizada 🤖")
 st.write("Sube tu archivo consolidado.")
+st.caption(
+    "Vista simplificada: el Excel final muestra solo las columnas originales + "
+    "Estado, Comentario, Candidatos y Distribuidora. Máximo 5 colores para identificar novedades."
+)
 
 with st.expander("⚙️ Parámetros de tolerancia para sugerencias (alertas)"):
     tol_dias = st.slider(
@@ -106,6 +113,14 @@ if archivo_subido is not None:
                 st.stop()
 
             usar_ipcb = col_clase_doc is not None
+
+            # ---------------------------------------------------------
+            # NUEVO: se captura el orden EXACTO de las columnas originales
+            # del archivo, ANTES de agregar cualquier columna calculada.
+            # Esto define las columnas A..L (o las que tenga el archivo)
+            # que se mostraran en el Excel final.
+            # ---------------------------------------------------------
+            columnas_originales = list(df.columns)
 
             # =========================================================
             # 2. AUTOCOMPLETADO DE BANCOS (Cuentas de Mayor)
@@ -168,14 +183,17 @@ if archivo_subido is not None:
             df['Candidatos_Conciliacion'] = ''
 
             # =========================================================
-            # PERIODO CONTABLE (REGLA NO NEGOCIABLE)
+            # PERIODO CONTABLE (REGLA NO NEGOCIABLE) - columna tecnica,
+            # se usa internamente pero NO se muestra en el Excel final.
             # =========================================================
             fecha_contable_calc = pd.to_datetime(df[col_fecha_contable], errors='coerce')
             df['Periodo_Contable'] = fecha_contable_calc.dt.to_period('M').astype(str)
             df.loc[fecha_contable_calc.isna(), 'Periodo_Contable'] = 'SIN_FECHA_CONTABLE'
 
             # =========================================================
-            # DETECCIÓN DE DOCUMENTOS CON POSICIONES MÚLTIPLES
+            # DETECCIÓN DE DOCUMENTOS CON POSICIONES MÚLTIPLES - columnas
+            # tecnicas, se usan internamente para filtrar la pestana
+            # REVISAR_POSICIONES_MULTIPLES pero NO se muestran en el Excel.
             # =========================================================
             grp_multi = [col_banco, 'Abs_Importe', col_fecha, col_referencia, 'Periodo_Contable']
             df['Posiciones_Mismo_Doc'] = df.groupby([col_doc] + grp_multi)[col_doc].transform('count')
@@ -185,6 +203,7 @@ if archivo_subido is not None:
 
             # =========================================================
             # CLASIFICACIÓN DE DISTRIBUIDORAS Y HOMOLOGACIÓN (IP/CB)
+            # 'Distribuidora' SI se muestra en el Excel final (columna U).
             # =========================================================
             mapeo_referencias_dist = {
                 "11760923": "Dist Acopi", "11761277": "Dist Acopi", "11761293": "Dist Acopi",
@@ -259,6 +278,8 @@ if archivo_subido is not None:
 
             df['Distribuidora'] = df.apply(clasificar_distribuidora, axis=1)
 
+            # Columnas tecnicas auxiliares (NO se muestran en el Excel final,
+            # pero SI se usan dentro del gate de seguridad candidato_seguro).
             def es_nequi(row):
                 texto = f"{row.get(col_texto,'') if col_texto else ''} {row.get(col_asignacion,'')} {row.get(col_referencia,'')}".upper()
                 return 'NEQUI' in texto
@@ -407,15 +428,8 @@ if archivo_subido is not None:
                         ):
                             usados_global.update([ida, idb])
 
-            # ---------------------------------------------------------
-            # *** BLOQUE CORREGIDO (antes causaba KeyError: 'Referencia') ***
-            # En vez de leer banco/importe/fecha/referencia/periodo desde la
-            # fila fusionada 'r' (que puede o no tener sufijo _40/_50 según
-            # si vino de c1, c2 o c3), se buscan SIEMPRE en el DataFrame
-            # original 'df' usando el ID_Temp. Esto elimina por completo la
-            # ambiguedad de columnas sufijadas y es inmune a futuros cambios
-            # en la forma de los merges.
-            # ---------------------------------------------------------
+            # Bloque corregido en v13: nunca leer 'r[col_referencia]' de filas
+            # fusionadas ambiguas; siempre buscar por ID_Temp en df original.
             com_r1_multi = {}
             for c in (c1, c2, c3):
                 for _, r in c.iterrows():
@@ -532,8 +546,6 @@ if archivo_subido is not None:
 
             # =========================================================
             # NIVEL 2: SECTORIZACIÓN, CRUCE ÚNICO Y VALOR REDONDO
-            # (Aquí es donde se concilian los NEQUI de valor único; con el
-            # KeyError corregido, este nivel ya se ejecuta normalmente)
             # =========================================================
             df_p1d = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
             if usar_ipcb:
@@ -592,7 +604,6 @@ if archivo_subido is not None:
             set_estado(ind_r1d_a, 'Sugerencia: Sugerencia por Distribuidora Multiples')
             set_comentarios(com_r1d_a)
 
-            # Cruce Único sin referencia (aquí concilian los NEQUI únicos)
             df_p = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
             if usar_ipcb:
                 df_p = df_p[df_p[col_clase_doc].astype(str).str.upper() != 'IP']
@@ -614,7 +625,6 @@ if archivo_subido is not None:
                     ind_r2.update([ida, idb])
                     usados_global.update([ida, idb])
 
-            # Desempate Grupo Cerrado (FIFO y Ambiguos)
             rem40 = df_p40[~df_p40['ID_Temp'].isin(ind_r2 | usados_global)]
             rem50 = df_p50[~df_p50['ID_Temp'].isin(ind_r2 | usados_global)]
 
@@ -816,6 +826,24 @@ if archivo_subido is not None:
                 df.loc[sin_p & (df['Comentario'] == ''), 'Comentario'] = 'Sin coincidencia ni sugerencia que cumpla reglas de seguridad - revisión manual completa'
 
             # =========================================================
+            # NUEVO: SELECCIÓN DE COLUMNAS VISIBLES (A..O + U)
+            # -----------------------------------------------------------
+            # El DataFrame 'df' internamente sigue teniendo TODAS las
+            # columnas (necesarias para filtros como Tiene_Posiciones_
+            # Repetidas). Justo antes de exportar cada pestaña se aplica
+            # esta funcion para mostrar solo lo pedido:
+            #   [columnas originales A..L] + Estado_Conciliacion (M) +
+            #   Comentario (N) + Candidatos_Conciliacion (O) + Distribuidora (U)
+            # =========================================================
+            columnas_visibles = columnas_originales + [
+                'Estado_Conciliacion', 'Comentario', 'Candidatos_Conciliacion', 'Distribuidora'
+            ]
+
+            def vista_simplificada(df_cualquiera):
+                cols_presentes = [c for c in columnas_visibles if c in df_cualquiera.columns]
+                return df_cualquiera[cols_presentes].copy()
+
+            # =========================================================
             # LIMPIEZA FINAL Y FORMATO
             # =========================================================
             cuadre_ok = filas_antes == (len(df) + len(filas_descartadas))
@@ -823,37 +851,38 @@ if archivo_subido is not None:
             for col_f in [c for c in df_final.columns if 'fe.' in c.lower() or 'fecha' in c.lower() or 'fe-' in c.lower()]:
                 df_final[col_f] = pd.to_datetime(df_final[col_f], errors='coerce').dt.strftime('%d/%m/%Y')
 
+            # ---------------------------------------------------------
+            # NUEVO: PALETA DE 5 COLORES (antes eran 7+)
+            #   1. Verde        -> Conciliado (match seguro/automatico)
+            #   2. Amarillo     -> Verificar / Sugerencia (FIFO, multiples)
+            #   3. Naranja      -> Alerta de fecha / diferencia de valor
+            #   4. Lila         -> Reclasificacion de banco
+            #   5. Gris claro   -> Pendiente / sin coincidencia
+            # ---------------------------------------------------------
             def resaltar_conciliados(row):
                 est = str(row['Estado_Conciliacion']).strip().lower()
 
-                if est == 'pendiente' or est == '' or est == 'nan':
-                    return [''] * len(row)
-
-                if 'posiciones múltiples' in est or 'verificar' in est:
-                    return ['background-color: #FDE2C9; color: black; font-weight: bold'] * len(row)
-
-                if ('cruce exacto' in est or 'cruce múltiple' in est or 'cruce unico' in est
-                        or 'cruce único' in est or 'cruce distribuidora' in est):
-                    return ['background-color: #C5D9F1; color: black'] * len(row)
-
-                if ('fifo' in est or 'múltiples' in est or 'multiples' in est
-                        or 'sectorización' in est or 'solicitar soporte' in est
-                        or 'fuerte' in est):
-                    return ['background-color: #FFF2CC; color: black'] * len(row)
-
-                if 'alerta' in est or 'fecha' in est or 'periodo' in est:
-                    return ['background-color: #FDEBD0; color: black'] * len(row)
+                if est in ('pendiente', '', 'nan'):
+                    return ['background-color: #EAEAEA; color: black'] * len(row)
 
                 if 'reclasificación' in est or 'otro banco' in est:
                     return ['background-color: #D7BDE2; color: black'] * len(row)
 
-                if 'valor' in est:
-                    return ['background-color: #F5B7B1; color: black'] * len(row)
+                if 'alerta' in est or 'diferencia' in est or 'fecha' in est or 'periodo' in est:
+                    return ['background-color: #FDEBD0; color: black'] * len(row)
 
-                return [''] * len(row)
+                if ('sugerencia' in est or 'fifo' in est or 'multiples' in est
+                        or 'múltiples' in est or 'verificar' in est or 'soporte' in est
+                        or 'fuerte' in est):
+                    return ['background-color: #FFF2CC; color: black'] * len(row)
+
+                if 'conciliado' in est:
+                    return ['background-color: #A9D18E; color: black'] * len(row)
+
+                return ['background-color: #EAEAEA; color: black'] * len(row)
 
             # =========================================================
-            # EXPORTACIÓN
+            # EXPORTACIÓN (todas las pestañas usan vista_simplificada)
             # =========================================================
             output = io.BytesIO()
             b_unicos = [b for b in df_final[col_banco].unique() if str(b).strip().lower() not in ('', 'nan')]
@@ -882,29 +911,35 @@ if archivo_subido is not None:
 
                 if not df_nov.empty:
                     df_nov = df_nov.sort_values(by=['Estado_Conciliacion', col_importe])
-                    df_nov.style.apply(resaltar_conciliados, axis=1).to_excel(writer, index=False, sheet_name='NOVEDADES_Y_PENDIENTES_40')
+                    vista_simplificada(df_nov).style.apply(
+                        lambda row: resaltar_conciliados(df_nov.loc[row.name]), axis=1
+                    ).to_excel(writer, index=False, sheet_name='NOVEDADES_Y_PENDIENTES_40')
                 else:
-                    pd.DataFrame(columns=df_final.columns).to_excel(writer, index=False, sheet_name='NOVEDADES_Y_PENDIENTES_40')
+                    pd.DataFrame(columns=columnas_visibles).to_excel(writer, index=False, sheet_name='NOVEDADES_Y_PENDIENTES_40')
 
                 df_multi = df_final[df_final['Tiene_Posiciones_Repetidas'] == True].copy()
                 if not df_multi.empty:
                     df_multi = df_multi.sort_values(by=[col_banco, col_importe, col_fecha, col_referencia, col_doc])
-                    df_multi.style.apply(resaltar_conciliados, axis=1).to_excel(writer, index=False, sheet_name='REVISAR_POSICIONES_MULTIPLES')
+                    vista_simplificada(df_multi).style.apply(
+                        lambda row: resaltar_conciliados(df_multi.loc[row.name]), axis=1
+                    ).to_excel(writer, index=False, sheet_name='REVISAR_POSICIONES_MULTIPLES')
 
                 for banco in b_unicos:
                     df_b = df_final[df_final[col_banco] == banco].copy().sort_values(by=col_importe, ascending=True)
                     n_pestana = re.sub(r'[\\/*?:\[\]]', '-', str(banco)[:31])
                     if not n_pestana.strip() or n_pestana.lower() == 'nan':
                         n_pestana = "Sin_Banco"
-                    df_b.style.apply(resaltar_conciliados, axis=1).to_excel(writer, index=False, sheet_name=n_pestana)
+                    vista_simplificada(df_b).style.apply(
+                        lambda row: resaltar_conciliados(df_b.loc[row.name]), axis=1
+                    ).to_excel(writer, index=False, sheet_name=n_pestana)
 
                 if not filas_descartadas.empty:
-                    filas_descartadas.to_excel(writer, index=False, sheet_name='DESCARTADAS_SIN_DOC_O_CT')
+                    vista_simplificada(filas_descartadas).to_excel(writer, index=False, sheet_name='DESCARTADAS_SIN_DOC_O_CT')
 
             # =========================================================
             # INTERFAZ
             # =========================================================
-            st.success("¡Conciliación Integral terminada! Bug de 'Referencia' corregido: el motor ya llega al Nivel 2 (NEQUI incluido).")
+            st.success("¡Conciliación Integral terminada! Vista simplificada: columnas originales + Estado + Comentario + Candidatos + Distribuidora.")
             if not cuadre_ok:
                 st.warning("⚠️ Revisa la pestaña DESCARTADAS, el total de filas no coincide.")
 
@@ -912,12 +947,21 @@ if archivo_subido is not None:
             if n_multi > 0:
                 st.warning(f"⚠️ Se detectaron {n_multi} filas con documentos de posiciones múltiples. Revisa REVISAR_POSICIONES_MULTIPLES antes de dar por bueno el cruce automático.")
 
+            st.markdown("""
+**Leyenda de colores (5 categorías):**
+- 🟩 Verde: Conciliado (match seguro)
+- 🟨 Amarillo: Verificar / Sugerencia (FIFO, múltiples posiciones)
+- 🟧 Naranja: Alerta de fecha o diferencia de valor
+- 🟪 Lila: Reclasificación de banco
+- ⬜ Gris: Pendiente / sin coincidencia
+""")
+
             c1_, c2_, c3_, c4_, c5_ = st.columns(5)
-            c1_.metric("Seguras (Azul)", len(ind_r1_limpio | ind_1c_ipcb | ind_r2))
-            c2_.metric("Múltiples/FIFO (Amarillo)", len(ind_r1d_f | ind_r1d_a | ind_r2d | ind_amb))
-            c3_.metric("Reclasificar (Lila)", len(ind_B))
-            c4_.metric("Alertas/Diferencias (Durazno/Rojo)", len(ind_A | ind_C))
-            c5_.metric("Posiciones múltiples (VERIFICAR)", n_multi)
+            c1_.metric("Conciliadas (Verde)", int(df_final['Estado_Conciliacion'].str.contains('Conciliado', na=False).sum()))
+            c2_.metric("Verificar (Amarillo)", len(ind_r1d_f | ind_r1d_a | ind_r2d | ind_amb | (ind_r1_multi - usados_global)))
+            c3_.metric("Alertas (Naranja)", len(ind_A | ind_C))
+            c4_.metric("Reclasificar (Lila)", len(ind_B))
+            c5_.metric("Pendientes (Gris)", int((df_final['Estado_Conciliacion'] == 'Pendiente').sum()))
 
             if filas_excluidas > 0:
                 st.warning(f"⚠️ Se excluyeron {filas_excluidas} filas vacías/totales.")
