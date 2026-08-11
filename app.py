@@ -1,3 +1,4 @@
+# --- INICIO DEL CÓDIGO ---
 # app_conciliacion_v25_reglas_clm.py
 #
 # REESCRITURA COMPLETA DEL MOTOR segun especificacion CLM entregada por
@@ -995,3 +996,5 @@ if archivo_subido is not None:
     except Exception as e:
         st.error(f"Error técnico detectado: {e}")
         st.exception(e)
+
+# --- FIN DEL CÓDIGO ---
