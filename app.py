@@ -1,61 +1,42 @@
-# app_conciliacion_v18_fifo_posicional.py
+# app_conciliacion_v19_azul_verde_corregido.py
 #
-# CORRECCION DE ENFOQUE sobre v17 (feedback del usuario, ver capturas):
+# CORRECCION DE COLOR sobre v18 (feedback del usuario):
 #
-# v17 LISTABA TODOS los candidatos del grupo dentro de CADA celda de la
-# columna O. Eso NO es lo pedido. El comportamiento correcto es:
+# PROBLEMA: cuando un grupo (banco+fecha+periodo+referencia) tenia mas
+# posiciones de un lado que del otro (ej. mas clave 50=CB que clave
+# 40=DZ), el emparejamiento FIFO SI encontraba pareja para todas las
+# lineas del lado con menos posiciones, pero esas filas seguian
+# coloreadas en VERDE ("Sugerencia fuerte - posiciones multiples"),
+# generando confusion: parecian dudosas cuando en realidad ya tenian un
+# candidato especifico y confiable asignado en la columna O.
 #
-#   Si el documento 1400081553 (clave 40 = DZ) tiene 6 posiciones/lineas
-#   repetidas con el MISMO banco+fecha+periodo+referencia (sin importar
-#   si el importe difiere entre posiciones), y del otro lado (clave 50 =
-#   CB) hay varios documentos candidatos distintos que tambien comparten
-#   banco+fecha+periodo+referencia, entonces:
+# CORRECCION: el color ahora se liga al RESULTADO REAL del
+# emparejamiento posicional, no a la deteccion inicial de "posiciones
+# multiples":
 #
-#     Fila 1 (posicion 1 del doc 1400081553) -> Candidatos_Conciliacion:
-#         "1400081553 (DZ=40) | 100855489 (CB=50)"
-#     Fila 2 (posicion 2) -> "1400081553 (DZ=40) | 100859704 (CB=50)"
-#     Fila 3 (posicion 3) -> "1400081553 (DZ=40) | 100855686 (CB=50)"
-#     Fila 4 (posicion 4) -> (sin candidato disponible) -> EN BLANCO
-#     Fila 5 (posicion 5) -> (sin candidato disponible) -> EN BLANCO
-#     Fila 6 (posicion 6) -> "1400081553 (DZ=40) | 100855136 (CB=50)"
+#   - AZUL  -> la fila SI obtuvo un candidato especifico en el
+#     emparejamiento FIFO (columna O con contenido). Estado:
+#     "Conciliado - Candidato principal (posición FIFO)".
+#   - VERDE -> la fila NO obtuvo pareja disponible (columna O vacia),
+#     sin importar si es la clave 40 (DZ) o la clave 50 (CB) la que
+#     sobra. Estado: "Sugerencia - Sin pareja disponible (puede quedar
+#     sin conciliar)".
 #
-#   Es decir: EMPAREJAMIENTO SECUENCIAL 1 A 1 (FIFO, por orden de
-#   aparicion en el archivo original), UN SOLO CANDIDATO POR FILA, y
-#   las posiciones sobrantes (cuando un lado tiene mas filas que el
-#   otro) quedan con la columna O VACIA - exactamente como se ve en la
-#   captura de referencia del usuario.
+# Esto aplica simetricamente: si sobran creditos (50), esos quedan en
+# verde y los debitos (40) que si calzaron quedan en azul; si sobran
+# debitos (40), esos quedan en verde y los creditos que si calzaron
+# quedan en azul. El color refleja SIEMPRE si la fila tiene o no un
+# candidato real en la columna O, que es lo que se necesita para
+# decidir de un vistazo que requiere revision manual.
 #
-# COMO SE IMPLEMENTA (paso final, despues de que el motor ya resolvio
-# los niveles 1, 1B, 1C, 2 y 3 normalmente):
-#
-#   1. Se agrupa por 'Grupo_Ampliado_Key' = banco + fecha EXACTA +
-#      periodo + referencia/asignacion limpia (segun el lado), SIN
-#      incluir el importe en la llave (para permitir valores distintos
-#      entre posiciones, como pidio el usuario: "conciliar todos los
-#      valores cuando se repiten muchas posiciones con diferentes
-#      valores").
-#   2. Dentro de cada grupo, se toman UNICAMENTE las filas que SIGAN
-#      con Candidatos_Conciliacion VACIA (para no tocar ni desordenar
-#      los pares ya confirmados como "Conciliado - Cruce exacto" por
-#      los niveles anteriores, que ya tienen su candidato correcto y
-#      especifico).
-#   3. El lado 40 y el lado 50 de esas filas restantes se ordenan por
-#      ID_Temp (orden original de aparicion en el archivo = "el orden
-#      del documento que se repite").
-#   4. Se empatan POSICION A POSICION (indice i del lado 40 con indice i
-#      del lado 50). Cada par escribe UN SOLO candidato especifico en
-#      Candidatos_Conciliacion de AMBAS filas del par.
-#   5. Las posiciones que sobran (cuando un lado tiene mas elementos que
-#      el otro) quedan con Candidatos_Conciliacion VACIA - no se rellena
-#      con nada, igual que en la captura de referencia.
-#
-# Todo lo demas es identico a v16/v17: motor de conciliacion completo
+# Todo lo demas es identico a v18: motor de conciliacion completo
 # (periodo obligatorio, tope 9 dias, banco, importe, distribuidora,
-# NEQUI, gate unico de seguridad para los niveles 1-3), columnas
-# visibles A..O + U, paleta de 5 colores, y exportacion blindada contra
-# "IndexError: At least one sheet must be visible".
+# NEQUI, gate unico de seguridad para niveles 1-3), emparejamiento FIFO
+# posicional final que permite valores distintos entre posiciones,
+# columnas visibles A..O + U, paleta de 5 colores, y exportacion
+# blindada contra "IndexError: At least one sheet must be visible".
 #
-# Ejecutar con: streamlit run app_conciliacion_v18_fifo_posicional.py
+# Ejecutar con: streamlit run app_conciliacion_v19_azul_verde_corregido.py
 
 import streamlit as st
 import pandas as pd
@@ -81,9 +62,8 @@ st.markdown(hide_style, unsafe_allow_html=True)
 st.title("🏦 Conciliación Automatizada 🤖")
 st.write("Sube tu archivo consolidado.")
 st.caption(
-    "Vista simplificada: columnas originales + Estado, Comentario, Candidatos y Distribuidora. "
-    "La columna Candidatos_Conciliacion muestra UN candidato especifico por fila (emparejamiento "
-    "secuencial FIFO), no una lista de todos los posibles."
+    "Azul = candidato principal (emparejado en columna O). Verde = sin pareja disponible "
+    "(puede quedar sin conciliar), sin importar si es la clave 40 o la clave 50 la que sobra."
 )
 
 with st.expander("⚙️ Parámetros de tolerancia para sugerencias (alertas)"):
@@ -437,12 +417,11 @@ if archivo_subido is not None:
                         ):
                             usados_global.update([ida, idb])
 
-            # NOTA: ya NO se escribe aqui un comentario "lista de candidatos"
-            # para ind_r1_multi. Esas filas quedan marcadas como pendientes
-            # de emparejamiento FIFO posicional, que se resuelve en el paso
-            # final (mas abajo), y ahi se les asigna UN candidato especifico
-            # por fila, en orden, o quedan en blanco si no hay suficientes.
-            set_estado(ind_r1_multi - usados_global, 'Sugerencia fuerte - Doc. con posiciones múltiples (VERIFICAR)')
+            # Las filas con posiciones repetidas quedan en un estado NEUTRO
+            # temporal (Pendiente) hasta que el emparejamiento FIFO final
+            # decida si consiguen candidato (azul) o no (verde). Ya NO se
+            # marcan de una vez en verde aqui, para evitar el problema de
+            # colorear como "dudoso" algo que en realidad si va a calzar.
             for tid in (ind_r1_multi - usados_global):
                 fila_tid = df.loc[df['ID_Temp'] == tid].iloc[0]
                 n_pos = int(fila_tid['Posiciones_Mismo_Doc'])
@@ -450,9 +429,8 @@ if archivo_subido is not None:
                 mask = df['ID_Temp'] == tid
                 anterior = str(df.loc[mask, 'Comentario'].iloc[0])
                 texto = (
-                    f"⚠️ Mismo Doc. tiene {n_pos} posiciones idénticas dentro del mismo periodo "
-                    f"{periodo_g}. Se asignará un candidato específico por posición (ver columna "
-                    f"Candidatos_Conciliacion); si no hay suficientes candidatos, quedará en blanco."
+                    f"Mismo Doc. tiene {n_pos} posiciones idénticas dentro del mismo periodo "
+                    f"{periodo_g}. Se evaluará emparejamiento FIFO posicional al final del proceso."
                 )
                 df.loc[mask, 'Comentario'] = texto if not anterior else anterior + " | " + texto
 
@@ -481,10 +459,8 @@ if archivo_subido is not None:
                 tiene_multi = df.loc[df['ID_Temp'].isin([ida, idb]), 'Tiene_Posiciones_Repetidas'].any()
                 if tiene_multi:
                     n_pos_a = int(df.loc[df['ID_Temp'] == ida, 'Posiciones_Mismo_Doc'].iloc[0])
-                    df.loc[df['ID_Temp'] == ida, 'Estado_Conciliacion'] = 'Sugerencia fuerte - Doc. con posiciones múltiples (VERIFICAR)'
-                    df.loc[df['ID_Temp'] == idb, 'Estado_Conciliacion'] = 'Sugerencia fuerte - Doc. con posiciones múltiples (VERIFICAR)'
-                    df.loc[df['ID_Temp'] == ida, 'Comentario'] = f"⚠️ Mismo Doc. tiene {n_pos_a} posiciones idénticas (ref. limpia). Se asignará candidato por posición."
-                    df.loc[df['ID_Temp'] == idb, 'Comentario'] = f"⚠️ Posiciones múltiples (ref. limpia). Se asignará candidato por posición."
+                    df.loc[df['ID_Temp'] == ida, 'Comentario'] = f"Mismo Doc. tiene {n_pos_a} posiciones idénticas (ref. limpia). Se evaluará emparejamiento FIFO posicional al final."
+                    df.loc[df['ID_Temp'] == idb, 'Comentario'] = f"Posiciones múltiples (ref. limpia). Se evaluará emparejamiento FIFO posicional al final."
                     continue
                 if escribir_candidato(
                     ida, idb, 'Conciliado - Cruce exacto (Ref limpia)',
@@ -812,25 +788,23 @@ if archivo_subido is not None:
                     set_estado(ind_D, 'Diferencia en valor (NEQUI)')
                     set_comentarios(com_D)
 
-            sin_p = df['Estado_Conciliacion'] == 'Pendiente'
-            if usar_ipcb:
-                es_ip = df[col_clase_doc].astype(str).str.upper() == 'IP'
-                df.loc[sin_p & es_ip & (df['Comentario'] == ''), 'Comentario'] = 'Sin coincidencia - PDV'
-                df.loc[sin_p & ~es_ip & (df['Comentario'] == ''), 'Comentario'] = 'Sin coincidencia ni sugerencia que cumpla reglas de seguridad - revisión manual completa'
-            else:
-                df.loc[sin_p & (df['Comentario'] == ''), 'Comentario'] = 'Sin coincidencia ni sugerencia que cumpla reglas de seguridad - revisión manual completa'
-
             # =========================================================
-            # *** NUEVO: EMPAREJAMIENTO FIFO POSICIONAL PARA LA COLUMNA O ***
+            # *** NUEVO: EMPAREJAMIENTO FIFO POSICIONAL + COLOR CORREGIDO ***
             # -----------------------------------------------------------
-            # Se aplica UNICAMENTE a las filas que sigan con
-            # Candidatos_Conciliacion vacio (no toca los pares ya resueltos
-            # de forma segura en los niveles anteriores). Agrupa por banco +
-            # fecha exacta + periodo + referencia/asignacion limpia del lado
-            # correspondiente (SIN exigir mismo importe), separa lado 40 y
-            # lado 50, los ordena por ID_Temp (orden original de aparicion =
-            # "el orden del documento que se repite"), y los empata 1 a 1.
-            # Las posiciones sobrantes de cualquier lado quedan en blanco.
+            # Se aplica a TODAS las filas que sigan con Candidatos_
+            # Conciliacion vacio (sin importar si su Estado_Conciliacion
+            # actual es 'Pendiente' o el marcador neutro de posiciones
+            # multiples). El color final se decide EXCLUSIVAMENTE por si
+            # la fila obtiene o no un candidato especifico:
+            #
+            #   - Consigue pareja  -> 'Conciliado - Candidato principal
+            #     (posición FIFO)' -> AZUL
+            #   - No consigue pareja -> 'Sugerencia - Sin pareja
+            #     disponible (puede quedar sin conciliar)' -> VERDE
+            #
+            # Esto es simetrico: no importa si la que sobra es la clave 40
+            # (DZ) o la clave 50 (CB); la que se quede sin pareja queda en
+            # verde, y la que si calzo queda en azul.
             # =========================================================
             def valor_clave_lado(row):
                 if str(row[col_clave]) == '40':
@@ -848,7 +822,7 @@ if archivo_subido is not None:
                 valor = str(row['Valor_Clave_Lado']).strip()
                 if valor:
                     return f"{banco}|{periodo}|{fecha}|REF-{valor}"
-                return None  # sin referencia utilizable: no se agrupa
+                return None
 
             df['Grupo_Ampliado_Key'] = df.apply(clave_grupo_ampliado, axis=1)
 
@@ -856,14 +830,16 @@ if archivo_subido is not None:
                 (df['Candidatos_Conciliacion'] == '') & df['Grupo_Ampliado_Key'].notna()
             ].copy()
 
+            ind_fifo_ok = set()
+            ind_fifo_sin_pareja = set()
+
             for grupo_key, grupo_df in pendientes_sin_candidato.groupby('Grupo_Ampliado_Key'):
                 lado_40 = grupo_df[grupo_df[col_clave] == '40'].sort_values('ID_Temp')
                 lado_50 = grupo_df[grupo_df[col_clave] == '50'].sort_values('ID_Temp')
 
-                if lado_40.empty or lado_50.empty:
-                    continue
-
                 n_pares = min(len(lado_40), len(lado_50))
+
+                # Emparejamiento 1 a 1: ambos lados quedan AZUL.
                 for i in range(n_pares):
                     fila_40 = lado_40.iloc[i]
                     fila_50 = lado_50.iloc[i]
@@ -871,12 +847,37 @@ if archivo_subido is not None:
                     id_50 = fila_50['ID_Temp']
 
                     texto_par = f"{formato_doc(id_40)} | {formato_doc(id_50)}"
-                    df.loc[df['ID_Temp'] == id_40, 'Candidatos_Conciliacion'] = texto_par
-                    df.loc[df['ID_Temp'] == id_50, 'Candidatos_Conciliacion'] = texto_par
+                    etiqueta_nequi = ""
+                    if bool(fila_40.get('Es_Nequi', False)) or bool(fila_50.get('Es_Nequi', False)):
+                        etiqueta_nequi = " [NEQUI: verificar manual]"
 
-                # Las posiciones sobrantes (mas alla de n_pares en cualquier
-                # lado) quedan deliberadamente EN BLANCO en Candidatos_
-                # Conciliacion: no hay candidato real disponible para ellas.
+                    for idx in (id_40, id_50):
+                        mask = df['ID_Temp'] == idx
+                        df.loc[mask, 'Candidatos_Conciliacion'] = texto_par
+                        df.loc[mask, 'Estado_Conciliacion'] = 'Conciliado - Candidato principal (posición FIFO)'
+                        anterior = str(df.loc[mask, 'Comentario'].iloc[0])
+                        nuevo_com = f"Candidato principal asignado por posición (FIFO) dentro del grupo.{etiqueta_nequi}"
+                        df.loc[mask, 'Comentario'] = nuevo_com if not anterior else anterior + " | " + nuevo_com
+                    ind_fifo_ok.update([id_40, id_50])
+
+                # Sobrantes de CUALQUIER lado: quedan VERDE, sin candidato.
+                sobrantes = list(lado_40.iloc[n_pares:]['ID_Temp']) + list(lado_50.iloc[n_pares:]['ID_Temp'])
+                for idx in sobrantes:
+                    mask = df['ID_Temp'] == idx
+                    df.loc[mask, 'Estado_Conciliacion'] = 'Sugerencia - Sin pareja disponible (puede quedar sin conciliar)'
+                    anterior = str(df.loc[mask, 'Comentario'].iloc[0])
+                    lado_str = 'clave 40 (débito)' if df.loc[mask, col_clave].iloc[0] == '40' else 'clave 50 (crédito)'
+                    nuevo_com = f"Sin pareja disponible en el grupo (sobra del lado {lado_str}). Requiere revisión manual."
+                    df.loc[mask, 'Comentario'] = nuevo_com if not anterior else anterior + " | " + nuevo_com
+                    ind_fifo_sin_pareja.add(idx)
+
+            sin_p = df['Estado_Conciliacion'] == 'Pendiente'
+            if usar_ipcb:
+                es_ip = df[col_clase_doc].astype(str).str.upper() == 'IP'
+                df.loc[sin_p & es_ip & (df['Comentario'] == ''), 'Comentario'] = 'Sin coincidencia - PDV'
+                df.loc[sin_p & ~es_ip & (df['Comentario'] == ''), 'Comentario'] = 'Sin coincidencia ni sugerencia que cumpla reglas de seguridad - revisión manual completa'
+            else:
+                df.loc[sin_p & (df['Comentario'] == ''), 'Comentario'] = 'Sin coincidencia ni sugerencia que cumpla reglas de seguridad - revisión manual completa'
 
             # =========================================================
             # SELECCIÓN DE COLUMNAS VISIBLES (A..O + U)
@@ -906,9 +907,9 @@ if archivo_subido is not None:
                 if 'alerta' in est or 'diferencia' in est or 'fecha' in est or 'periodo' in est:
                     return [f'background-color: {COLOR_ALERTA}; color: black'] * len(row)
 
-                if ('sugerencia' in est or 'fifo' in est or 'multiples' in est
-                        or 'múltiples' in est or 'verificar' in est or 'soporte' in est
-                        or 'fuerte' in est):
+                if ('sugerencia' in est or 'fifo' in est and 'candidato principal' not in est
+                        or 'multiples' in est or 'múltiples' in est or 'verificar' in est
+                        or 'soporte' in est or ('fuerte' in est and 'candidato principal' not in est)):
                     return [f'background-color: {COLOR_VERIFICAR}; color: black'] * len(row)
 
                 if 'conciliado' in est:
@@ -991,11 +992,12 @@ if archivo_subido is not None:
                     "Métrica": [
                         "Fecha de procesamiento",
                         "Total filas procesadas",
-                        "Conciliadas",
-                        "Verificar / Sugerencia",
-                        "Alertas / Diferencias",
-                        "Reclasificar banco",
-                        "Pendientes",
+                        "Conciliadas (azul)",
+                        "Candidato principal por FIFO posicional (azul)",
+                        "Sin pareja disponible (verde, puede quedar sin conciliar)",
+                        "Alertas / Diferencias (naranja)",
+                        "Reclasificar banco (lila)",
+                        "Pendientes (blanco)",
                         "Filas con Candidatos_Conciliacion asignado",
                         "Filas excluidas (sin doc/clave)",
                         "Filas con posiciones múltiples",
@@ -1004,7 +1006,8 @@ if archivo_subido is not None:
                         datetime.now().strftime('%d/%m/%Y %H:%M'),
                         total_filas,
                         total_conciliadas,
-                        total_verificar,
+                        len(ind_fifo_ok),
+                        len(ind_fifo_sin_pareja),
                         total_alertas,
                         total_reclasificar,
                         total_pendientes,
@@ -1041,7 +1044,7 @@ if archivo_subido is not None:
             # =========================================================
             # INTERFAZ
             # =========================================================
-            st.success("¡Conciliación Integral terminada! Columna O: un candidato específico por fila (orden FIFO posicional), en blanco cuando no hay pareja disponible.")
+            st.success("¡Conciliación Integral terminada! Azul = candidato principal asignado. Verde = sin pareja disponible (revisar manualmente).")
             if not cuadre_ok:
                 st.warning("⚠️ Revisa la pestaña DESCARTADAS, el total de filas no coincide.")
 
@@ -1051,25 +1054,26 @@ if archivo_subido is not None:
 
             n_multi = int(df_final['Tiene_Posiciones_Repetidas'].sum())
             if n_multi > 0:
-                st.warning(f"⚠️ Se detectaron {n_multi} filas con documentos de posiciones múltiples. La columna Candidatos_Conciliacion ahora asigna UN candidato especifico por posición, en orden; las posiciones sin pareja disponible quedan en blanco.")
+                st.info(f"ℹ️ De {n_multi} filas con posiciones múltiples: {len(ind_fifo_ok)} obtuvieron candidato principal (azul) y {len(ind_fifo_sin_pareja)} quedaron sin pareja disponible (verde).")
 
             st.markdown(f"""
 **Leyenda de colores (5 categorías):**
-- <span style="background-color:{COLOR_CONCILIADO}; padding:2px 8px;">Conciliado (match seguro)</span>
-- <span style="background-color:{COLOR_VERIFICAR}; padding:2px 8px;">Verificar / Sugerencia (FIFO, múltiples posiciones)</span>
+- <span style="background-color:{COLOR_CONCILIADO}; padding:2px 8px;">Conciliado / Candidato principal (match seguro o FIFO posicional)</span>
+- <span style="background-color:{COLOR_VERIFICAR}; padding:2px 8px;">Sin pareja disponible / Sugerencia (puede quedar sin conciliar)</span>
 - <span style="background-color:{COLOR_ALERTA}; padding:2px 8px;">Alerta de fecha o diferencia de valor</span>
 - <span style="background-color:{COLOR_RECLASIFICAR}; padding:2px 8px;">Reclasificación de banco</span>
 - <span style="background-color:{COLOR_PENDIENTE}; padding:2px 8px; border:1px solid #ccc;">Pendiente / sin coincidencia</span>
 
-**Cómo leer la columna O (Candidatos_Conciliacion):** cada fila muestra UN candidato específico
-(el emparejado en orden de aparición dentro de su grupo banco+fecha+periodo+referencia). Si
-filtras por un Nº de documento repetido, verás cada posición con su pareja específica; las
-posiciones sin candidato disponible aparecerán en blanco.
+**Cómo leer el color ahora:** el azul indica que la fila SÍ tiene un candidato específico
+en la columna Candidatos_Conciliacion (ya sea cruce exacto o candidato principal FIFO
+posicional). El verde indica que, dentro de su grupo, esa fila NO consiguió pareja —
+sin importar si es clave 40 (débito) o clave 50 (crédito) la que sobra— y por eso puede
+quedar sin conciliar; requiere revisión manual.
 """, unsafe_allow_html=True)
 
             c1_, c2_, c3_, c4_, c5_ = st.columns(5)
-            c1_.metric("Conciliadas", int(df_final['Estado_Conciliacion'].str.contains('Conciliado', na=False).sum()))
-            c2_.metric("Verificar", len(ind_r1d_f | ind_r1d_a | ind_r2d | ind_amb | (ind_r1_multi - usados_global)))
+            c1_.metric("Conciliadas (azul)", int(df_final['Estado_Conciliacion'].str.contains('Conciliado', na=False).sum()))
+            c2_.metric("Sin pareja (verde)", len(ind_fifo_sin_pareja) + len(ind_r1d_a) + len(ind_amb))
             c3_.metric("Alertas", len(ind_A | ind_C))
             c4_.metric("Reclasificar", len(ind_B))
             c5_.metric("Pendientes", int((df_final['Estado_Conciliacion'] == 'Pendiente').sum()))
