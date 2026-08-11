@@ -1,4 +1,37 @@
-# app_conciliacion_v26_optimizacion_y_correcciones_finales.py
+# app_conciliacion_v25_reglas_clm.py
+#
+# REESCRITURA COMPLETA DEL MOTOR segun especificacion CLM entregada por
+# el usuario. Sustituye a v20-v24. Cada bloque de codigo esta comentado
+# con el numero de regla que implementa.
+#
+# =========================================================================
+# MAPEO FIJO DE COLUMNAS (CLM = nombre de columna en el prompt)
+# =========================================================================
+#   A -> Asignación
+#   B -> Nº documento
+#   C -> Clase de documento (DZ / CB / IP)
+#   D -> Fecha del periodo / Fe.contabilización (SOLO PERIODO, NO concilia)
+#   F -> Fecha valor (Fecha valor) -> ES LA FECHA PRINCIPAL DE CONCILIACION
+#   G -> Clave contabiliz. (40 = débito/legalización, 50 = ingreso/cargue)
+#   H -> Referencia
+#   I -> Importe en moneda local
+#   K -> Texto
+#   Banco -> Clave referencia 3
+#   M -> Estado_Conciliacion (estado + alertas, se escribe en este campo)
+#   O -> Candidatos_Conciliacion (candidatos que el usuario puede filtrar)
+#
+# =========================================================================
+# CORRECCION CLAVE FRENTE A v24:
+# La fecha D (periodo) YA NO PUEDE sustituir a F. En v24 se permitia
+# conciliar con Referencia exacta aunque el periodo contable (D) fuera
+# distinto. Eso queda ELIMINADO. Ahora:
+#   - F debe coincidir EXACTO para "Conciliado" (azul).
+#   - Si F difiere hasta 4 dias (tope fijo, Regla 7) y todo lo demas
+#     coincide -> Alerta de fecha (SALMON), nunca azul.
+#   - D solo se usa para fines informativos/periodo, nunca bloquea ni
+#     habilita conciliacion.
+# =========================================================================
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -6,66 +39,64 @@ import io
 import re
 from datetime import datetime
 
-# ============================================================
-# CONFIGURACIÓN DE LA PÁGINA
-# ============================================================
-st.set_page_config(page_title="Conciliación Integral", layout="wide")
-
-hide_style = """
+st.set_page_config(page_title="Conciliación Integral CLM", layout="wide")
+st.markdown("""
     <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
     </style>
-"""
-st.markdown(hide_style, unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
-st.title("🏦 Conciliación Automatizada 🤖")
+st.title("🏦 Conciliación Automatizada — Motor CLM v25 🤖")
 st.write("Sube tu archivo consolidado.")
 st.caption(
-    "v26 (Depurada): Se corrigieron 4 bugs críticos de rendimiento O(N²), división por cero, "
-    "emparejamiento aleatorio (drop_duplicates) y sobrescritura destructiva de cruces exactos. "
-    "El color Verde (#A9D18E) aplica ÚNICAMENTE a documentos Clave 40, Clase DZ sin conciliar."
+    "Motor reescrito según especificación CLM: A=Asignación, B=Nº doc, C=Clase doc, "
+    "D=Fecha periodo (informativa), F=Fecha valor (PRINCIPAL, debe coincidir), "
+    "G=Clave (40 débito/legalización, 50 ingreso/cargue), H=Referencia, I=Importe, "
+    "K=Texto, M=Estado, O=Candidatos."
 )
 
-with st.expander("⚙️ Parámetros de tolerancia para sugerencias (alertas)"):
-    tol_dias = st.slider(
-        "Días máximos de diferencia para alertar 'error de fecha' (mismo periodo, tope 9)",
-        1, 9, 3
+with st.expander("⚙️ Parámetros de tolerancia"):
+    TOPE_DIAS_ALERTA = st.slider(
+        "Días máximos de diferencia de fecha F para alerta (Regla 7, tope fijo 4)",
+        1, 4, 4
     )
-    tol_valor_abs = st.number_input("Diferencia absoluta máxima de valor para alertar ($)", min_value=1, value=5000, step=100)
-    tol_valor_pct = st.number_input("Diferencia relativa máxima de valor para alertar (%)", min_value=0.01, value=0.5, step=0.01) / 100
-    multiplo_redondo = st.selectbox("Múltiplo para considerar un valor 'redondo' (alta ambigüedad)", [50000, 100000], index=1)
-    activar_sector_redondos = st.checkbox(
-        "Activar 'Sugerencia por Sectorización en Valores Redondos' (banco+importe+periodo+Distribuidora; "
-        "NUNCA cruza sectores distintos, requiere que ambos lados tengan sectorización clasificada)",
-        value=True
+    tol_valor_purpura = st.number_input(
+        "Diferencia máxima de valor ($) para alerta MORADA (Regla morado, tope 500)",
+        min_value=1, value=500, step=50, max_value=500
     )
+    tol_valor_abs_general = st.number_input(
+        "Diferencia absoluta general de valor para alertar (más allá del morado) ($)",
+        min_value=1, value=5000, step=100
+    )
+    tol_valor_pct_general = st.number_input(
+        "Diferencia relativa general de valor para alertar (%)",
+        min_value=0.01, value=0.5, step=0.01
+    ) / 100
+    multiplo_redondo = st.selectbox("Múltiplo para valor 'redondo' (alta ambigüedad)", [50000, 100000], index=1)
 
-TOPE_DIAS_ALERTA = 9
-tol_dias = min(tol_dias, TOPE_DIAS_ALERTA)
-
-COLOR_CONCILIADO = "#C5D9F1"
-COLOR_VERIFICAR = "#A9D18E"  # VERDE EXCLUSIVO 40 DZ
-COLOR_AMARILLO = "#FFF2CC"   # AMARILLO RESTO DE SUGERENCIAS
-COLOR_ALERTA = "#FDEBD0"
-COLOR_RECLASIFICAR = "#D7BDE2"
-COLOR_PENDIENTE = "#FFFFFF"
+COLOR_AZUL = "#C5D9F1"      # Conciliado (todas las reglas cumplen)
+COLOR_VERDE = "#A9D18E"     # Sugerencia / DZ multiposición / sectorización / IP%
+COLOR_SALMON = "#F5B7A1"    # Diferencia de fecha (hasta 4 días) - Regla 7
+COLOR_MORADO = "#C39BD3"    # Diferencia de valor máx $500 - Regla morado
+COLOR_DURAZNO = "#FAD7A0"   # Reclasificación de banco - Regla 6
+COLOR_BLANCO = "#FFFFFF"    # Pendiente
 
 archivo_subido = st.file_uploader("Selecciona el archivo de Excel o CSV", type=['xlsx', 'csv'])
 
 if archivo_subido is not None:
     try:
-        with st.spinner("Ejecutando motor de reglas O(1), clasificación multibanco y validación de periodo..."):
+        with st.spinner("Ejecutando motor de reglas CLM..."):
 
-            # =========================================================
-            # 1. LECTURA Y MAPEO DE COLUMNAS
-            # =========================================================
+            # =====================================================
+            # 1. LECTURA
+            # =====================================================
             if archivo_subido.name.lower().endswith('.csv'):
                 df = pd.read_csv(archivo_subido)
             else:
-                diccionario_hojas = pd.read_excel(archivo_subido, sheet_name=None)
-                hojas_validas = [h for h in diccionario_hojas.values() if not h.dropna(how='all').empty]
+                hojas = pd.read_excel(archivo_subido, sheet_name=None)
+                hojas_validas = [h for h in hojas.values() if not h.dropna(how='all').empty]
                 if not hojas_validas:
                     st.error("El archivo no contiene hojas con datos.")
                     st.stop()
@@ -73,35 +104,34 @@ if archivo_subido is not None:
 
             df.columns = df.columns.str.strip()
 
-            col_asignacion = 'Asignación' if 'Asignación' in df.columns else 'Asignaión'
-            col_referencia = 'Referencia'
-            col_clave = 'Clave contabiliz.' if 'Clave contabiliz.' in df.columns else 'CT'
-            col_fecha = 'Fecha valor' if 'Fecha valor' in df.columns else 'Fe-valor'
-            col_fecha_contable = 'Fe.contabilización' if 'Fe.contabilización' in df.columns else (
-                'Fecha de documento' if 'Fecha de documento' in df.columns else col_fecha
-            )
-            col_importe = 'Importe en moneda local' if 'Importe en moneda local' in df.columns else 'Importe en ML'
-            col_banco = 'Clave referencia 3'
-            col_doc = 'Nº documento' if 'Nº documento' in df.columns else 'Nº doc.'
-            col_texto = 'Texto' if 'Texto' in df.columns else None
+            # ---- Mapeo CLM -> nombres reales de columna ----
+            col_A = 'Asignación' if 'Asignación' in df.columns else 'Asignaión'
+            col_B = 'Nº documento' if 'Nº documento' in df.columns else 'Nº doc.'
+            col_C = 'Clase de documento' if 'Clase de documento' in df.columns else ('Clase doc.' if 'Clase doc.' in df.columns else None)
+            col_D = 'Fe.contabilización' if 'Fe.contabilización' in df.columns else ('Fecha de documento' if 'Fecha de documento' in df.columns else None)
+            col_F = 'Fecha valor' if 'Fecha valor' in df.columns else 'Fe-valor'
+            col_G = 'Clave contabiliz.' if 'Clave contabiliz.' in df.columns else 'CT'
+            col_H = 'Referencia'
+            col_I = 'Importe en moneda local' if 'Importe en moneda local' in df.columns else 'Importe en ML'
+            col_K = 'Texto' if 'Texto' in df.columns else None
             col_novedad = 'novedad' if 'novedad' in df.columns else ('Novedad' if 'Novedad' in df.columns else None)
-            col_clase_doc = 'Clase de documento' if 'Clase de documento' in df.columns else ('Clase doc.' if 'Clase doc.' in df.columns else None)
+            col_banco = 'Clave referencia 3'
 
-            columnas_requeridas = [col_referencia, col_clave, col_fecha, col_importe, col_banco, col_doc]
-            faltantes = [c for c in columnas_requeridas if c not in df.columns]
+            requeridas = [col_H, col_G, col_F, col_I, col_banco, col_B]
+            faltantes = [c for c in requeridas if c not in df.columns]
             if faltantes:
                 st.error(f"No se encontraron estas columnas obligatorias: {faltantes}")
                 st.stop()
-            if col_asignacion not in df.columns:
-                st.error("No se encontró la columna de Asignación en el archivo.")
+            if col_A not in df.columns:
+                st.error("No se encontró la columna Asignación (A).")
                 st.stop()
 
-            usar_ipcb = col_clase_doc is not None
+            usar_ipcb = col_C is not None
             columnas_originales = list(df.columns)
 
-            # =========================================================
-            # 2. AUTOCOMPLETADO DE BANCOS (Cuentas de Mayor)
-            # =========================================================
+            # =====================================================
+            # 2. AUTOCOMPLETADO DE BANCO (Cuentas de Mayor)
+            # =====================================================
             mapeo_cuentas_banco = {
                 "1110056001": "CUENTA 1110056001", "1110056101": "BANCO DE BOGOTA",
                 "1110056201": "BANCO DAVIBANK S.A.", "1110056301": "BANCOLOMBIA S.A.",
@@ -110,64 +140,60 @@ if archivo_subido is not None:
                 "1120055001": "BANCO COMERCIAL AV V", "1120055101": "BANCO DE OCCIDENTE",
                 "1120055301": "BANCO GNB SUDAMERIS",
             }
-
             bancos_completados = []
             current_bank = None
             for _, row in df.iterrows():
-                asig_val = str(row.get(col_asignacion, ""))
+                asig_val = str(row.get(col_A, ""))
                 banco_val = row.get(col_banco, None)
-
                 if "cuenta de mayor" in asig_val.lower():
-                    match_cuenta = re.search(r'(\d{6,})', asig_val)
-                    if match_cuenta:
-                        cuenta_num = match_cuenta.group(1)
-                        current_bank = mapeo_cuentas_banco.get(cuenta_num, f"CUENTA {cuenta_num} (sin mapear)")
-
+                    m = re.search(r'(\d{6,})', asig_val)
+                    if m:
+                        current_bank = mapeo_cuentas_banco.get(m.group(1), f"CUENTA {m.group(1)} (sin mapear)")
                 if pd.notnull(banco_val) and str(banco_val).strip().lower() not in ("", "nan"):
                     current_bank = str(banco_val).strip()
                 bancos_completados.append(current_bank)
-
             df[col_banco] = bancos_completados
-            df = df[~df[col_asignacion].astype(str).str.contains("cuenta de mayor", case=False, na=False)].copy()
+            df = df[~df[col_A].astype(str).str.contains("cuenta de mayor", case=False, na=False)].copy()
 
-            # =========================================================
-            # 3. LIMPIEZA BASE Y ORDENAMIENTO
-            # =========================================================
-            df[col_doc] = pd.to_numeric(df[col_doc], errors='coerce')
+            # =====================================================
+            # 3. LIMPIEZA BASE
+            # =====================================================
+            df[col_B] = pd.to_numeric(df[col_B], errors='coerce')
             filas_antes = len(df)
-            filas_descartadas = df[df[col_doc].isna() | df[col_clave].isna()].copy()
-            df = df.dropna(subset=[col_doc, col_clave]).reset_index(drop=True)
+            filas_descartadas = df[df[col_B].isna() | df[col_G].isna()].copy()
+            df = df.dropna(subset=[col_B, col_G]).reset_index(drop=True)
             filas_excluidas = filas_antes - len(df)
 
-            df = df.sort_values(by=[col_doc], ascending=True).reset_index(drop=True)
-            
-            # El ID_Temp ahora será exactamente el índice, lo que permite acceso O(1) con .at[] y .loc[]
-            df['ID_Temp'] = df.index
+            df = df.sort_values(by=[col_B], ascending=True).reset_index(drop=True)
+            df['ID_Linea'] = df.index  # identificador único por LINEA (no por documento)
 
-            df[col_clave] = df[col_clave].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+            df[col_G] = df[col_G].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
             df[col_banco] = df[col_banco].astype(str).str.strip()
-            df[col_importe] = pd.to_numeric(df[col_importe], errors='coerce').fillna(0)
-            df['Abs_Importe'] = df[col_importe].abs()
+            df[col_I] = pd.to_numeric(df[col_I], errors='coerce').fillna(0)
+            df['Abs_I'] = df[col_I].abs()
 
-            df['Fecha_Calc'] = pd.to_datetime(df[col_fecha], errors='coerce')
-            df[col_fecha] = df['Fecha_Calc'].dt.date
+            df['Fecha_F'] = pd.to_datetime(df[col_F], errors='coerce')
+            df[col_F] = df['Fecha_F'].dt.date
 
-            df['Estado_Conciliacion'] = 'Pendiente'
+            if col_D:
+                df['Fecha_D'] = pd.to_datetime(df[col_D], errors='coerce')
+                df['Periodo_D'] = df['Fecha_D'].dt.to_period('M').astype(str)
+                df.loc[df['Fecha_D'].isna(), 'Periodo_D'] = 'SIN_FECHA_D'
+            else:
+                df['Periodo_D'] = 'SIN_FECHA_D'
+
+            df['Estado_Conciliacion'] = 'Pendiente'   # columna M
             df['Comentario'] = ''
-            df['Candidatos_Conciliacion'] = ''
+            df['Candidatos_Conciliacion'] = ''        # columna O
 
-            fecha_contable_calc = pd.to_datetime(df[col_fecha_contable], errors='coerce')
-            df['Periodo_Contable'] = fecha_contable_calc.dt.to_period('M').astype(str)
-            df.loc[fecha_contable_calc.isna(), 'Periodo_Contable'] = 'SIN_FECHA_CONTABLE'
+            # Posiciones repetidas del mismo B (Regla 4)
+            df['B_Repite'] = df.groupby(col_B)[col_B].transform('count') > 1
 
-            grp_multi = [col_banco, 'Abs_Importe', col_fecha, col_referencia, 'Periodo_Contable']
-            df['Posiciones_Mismo_Doc'] = df.groupby([col_doc] + grp_multi)[col_doc].transform('count')
-            df['Total_Posiciones_Grupo'] = df.groupby(grp_multi)[col_doc].transform('count')
-            df['Docs_Unicos_Grupo'] = df.groupby(grp_multi)[col_doc].transform('nunique')
-            df['Tiene_Posiciones_Repetidas'] = (df['Posiciones_Mismo_Doc'] > 1)
-
-            df['Doc_ColB_Repite'] = df.groupby(col_doc)[col_doc].transform('count') > 1
-
+            # =====================================================
+            # 4. SECTORIZACIÓN (Regla 2)
+            #    Prioridad: 1) código D502-505 en K  2) rango de H
+            #    3) referencia/asignación homologada  4) Sin clasificar
+            # =====================================================
             mapeo_referencias_dist = {
                 "11760923": "Dist Acopi", "11761277": "Dist Acopi", "11761293": "Dist Acopi",
                 "11761327": "Dist Acopi", "11761301": "Dist Acopi", "12273934": "Dist Acopi",
@@ -189,7 +215,6 @@ if archivo_subido is not None:
                 "20235651": "Dist Pasto", "15536170": "Dist Pasto", "17549197": "Dist Pasto",
                 "17608605": "Dist Pasto", "17968405": "VENTA EN LINEA"
             }
-
             mapeo_datafono_ref = {
                 "11760923": "3001", "11761277": "3002", "11761293": "3003", "11761327": "3004",
                 "11761301": "3005", "12273934": "3006", "11761319": "3007", "12273900": "3008",
@@ -204,1038 +229,782 @@ if archivo_subido is not None:
                 "15536170": "6106", "17549197": "6108"
             }
 
-            def clasificar_distribuidora(row):
-                ref_val = str(row.get(col_referencia, "")).strip()
-                ref_val = re.sub(r'\.0$', '', ref_val)
-                if ref_val in mapeo_referencias_dist:
-                    return mapeo_referencias_dist[ref_val]
+            def clasificar_sector(row):
+                texto_k = str(row.get(col_K, "")) if col_K else ""
+                texto_nov = str(row.get(col_novedad, "")) if col_novedad else ""
+                texto_a = str(row.get(col_A, ""))
+                h_val = str(row.get(col_H, "")).strip()
+                h_val = re.sub(r'\.0$', '', h_val)
 
-                texto_val = row.get(col_texto, "") if col_texto else ""
-                novedad_val = row.get(col_novedad, "") if col_novedad else ""
-                asig_val = str(row.get(col_asignacion, "")) if col_asignacion else ""
-                t = f"{texto_val} {novedad_val} {asig_val} {ref_val}".upper()
+                t = f"{texto_k} {texto_nov}".upper()
+                # 1) Código explícito D502-D505 en K
+                if 'D502' in t: return 'Dist Buga'
+                if 'D503' in t: return 'Dist Acopi'
+                if 'D504' in t: return 'Dist Dosquebradas'
+                if 'D505' in t: return 'Dist Pasto'
 
-                if 'DOSQ' in t or 'D504' in t: return 'Dist Dosquebradas'
-                if 'ACOPI' in t or 'D503' in t: return 'Dist Acopi'
-                if 'PASTO' in t or 'D505' in t: return 'Dist Pasto'
-                if 'BUGA' in t or 'D502' in t: return 'Dist Buga'
+                # 2) Rango numérico de H (Referencia)
+                if h_val.isdigit():
+                    num = int(h_val)
+                    if 2000 <= num <= 2999: return 'Dist Buga'
+                    if 3000 <= num <= 3999: return 'Dist Acopi'
+                    if 4000 <= num <= 4999: return 'Dist Dosquebradas'
+                    if 6000 <= num <= 6999: return 'Dist Pasto'
 
-                numeros = re.findall(r'\b\d{4}\b', t)
-                for n in numeros:
+                # 3) Referencia/Asignación homologada (mapeo directo)
+                if h_val in mapeo_referencias_dist:
+                    return mapeo_referencias_dist[h_val]
+
+                t_full = f"{texto_k} {texto_nov} {texto_a} {h_val}".upper()
+                nums = re.findall(r'\b\d{4}\b', t_full)
+                for n in nums:
                     num = int(n)
                     if 2000 <= num <= 2999: return 'Dist Buga'
                     if 3000 <= num <= 3999: return 'Dist Acopi'
                     if 4000 <= num <= 4999: return 'Dist Dosquebradas'
                     if 6000 <= num <= 6999: return 'Dist Pasto'
+
                 return 'Sin clasificar'
 
+            df['Sector'] = df.apply(clasificar_sector, axis=1)
+
             def obtener_ref_homologada(row):
-                texto = f"{row.get(col_referencia,'')} {row.get(col_asignacion,'')} {row.get(col_texto,'') if col_texto else ''} {row.get(col_novedad,'') if col_novedad else ''}".upper()
-                numeros_8 = re.findall(r'\b\d{8}\b', texto)
-                for num in numeros_8:
-                    if num in mapeo_datafono_ref: return mapeo_datafono_ref[num]
-                numeros_4 = re.findall(r'\b\d{4}\b', texto)
-                for num in numeros_4:
-                    if num in mapeo_datafono_ref.values(): return num
+                texto = f"{row.get(col_H,'')} {row.get(col_A,'')} {row.get(col_K,'') if col_K else ''} {row.get(col_novedad,'') if col_novedad else ''}".upper()
+                n8 = re.findall(r'\b\d{8}\b', texto)
+                for n in n8:
+                    if n in mapeo_datafono_ref: return mapeo_datafono_ref[n]
+                n4 = re.findall(r'\b\d{4}\b', texto)
+                for n in n4:
+                    if n in mapeo_datafono_ref.values(): return n
                 return None
 
-            df['Distribuidora'] = df.apply(clasificar_distribuidora, axis=1)
-
             def es_nequi(row):
-                texto = f"{row.get(col_texto,'') if col_texto else ''} {row.get(col_asignacion,'')} {row.get(col_referencia,'')}".upper()
+                texto = f"{row.get(col_K,'') if col_K else ''} {row.get(col_A,'')} {row.get(col_H,'')}".upper()
                 return 'NEQUI' in texto
 
-            def limpiar_numero(valor):
-                if pd.isna(valor): return ''
-                t = re.sub(r'\.0$', '', str(valor).strip())
+            def limpiar_numero(v):
+                if pd.isna(v): return ''
+                t = re.sub(r'\.0$', '', str(v).strip())
                 m = re.findall(r'\d+', t)
                 return m[0] if m else ''
 
             df['Es_Nequi'] = df.apply(es_nequi, axis=1)
-            df['Referencia_Limpia'] = df[col_referencia].apply(limpiar_numero)
-            df['Asignacion_Limpia'] = df[col_asignacion].apply(limpiar_numero)
+            df['H_Limpia'] = df[col_H].apply(limpiar_numero)
+            df['A_Limpia'] = df[col_A].apply(limpiar_numero)
 
-            def set_estado(indices, estado):
-                for idx in indices:
-                    df.at[idx, 'Estado_Conciliacion'] = estado
-
-            def set_comentarios(dic_comentarios):
-                for id_temp, texto in dic_comentarios.items():
-                    anterior = str(df.at[id_temp, 'Comentario'])
-                    df.at[id_temp, 'Comentario'] = texto if not anterior else anterior + " | " + texto
+            # =====================================================
+            # FUNCIONES AUXILIARES
+            # =====================================================
+            def formato_linea(idl):
+                r = df.loc[df['ID_Linea'] == idl].iloc[0]
+                d = str(int(r[col_B])) if pd.notna(r[col_B]) else ""
+                c = str(r[col_C]) if usar_ipcb and pd.notna(r.get(col_C)) else ""
+                g = str(r[col_G])
+                i = f"${r['Abs_I']:,.0f}"
+                f = str(r[col_F])
+                etiqueta_clase = f"{c}=" if c and c.lower() != 'nan' else ""
+                return f"{d} ({etiqueta_clase}G{g}, {i}, F{f})"
 
             def resumen_docs(sub_df):
-                return ", ".join(str(int(d)) for d in sub_df[col_doc].tolist())
+                return ", ".join(str(int(d)) for d in sub_df[col_B].tolist())
 
-            def es_valor_redondo(v):
-                return (v % multiplo_redondo == 0) and v > 0
+            def escribir_estado(indices, estado, forzar=False):
+                if not indices:
+                    return
+                if forzar:
+                    df.loc[df['ID_Linea'].isin(indices), 'Estado_Conciliacion'] = estado
+                else:
+                    mask = df['ID_Linea'].isin(indices) & (df['Estado_Conciliacion'] == 'Pendiente')
+                    df.loc[mask, 'Estado_Conciliacion'] = estado
 
-            def formato_doc(id_temp):
-                r = df.loc[id_temp]
-                d = str(int(r[col_doc])) if pd.notna(r[col_doc]) else ""
-                c = str(r[col_clase_doc]) if usar_ipcb and pd.notna(r.get(col_clase_doc)) else ""
-                k = str(r[col_clave])
-                return f"{d} ({c}={k})" if c and c.lower() != 'nan' else f"{d} (Clv {k})"
+            def escribir_comentario(idl, texto, append=True):
+                mask = df['ID_Linea'] == idl
+                if append:
+                    anterior = str(df.loc[mask, 'Comentario'].iloc[0])
+                    df.loc[mask, 'Comentario'] = texto if not anterior else anterior + " | " + texto
+                else:
+                    df.loc[mask, 'Comentario'] = texto
 
-            def candidato_seguro(id_a, id_b, exigir_mismo_importe=True, exigir_mismo_periodo=True):
-                ra = df.loc[id_a]
-                rb = df.loc[id_b]
+            def escribir_candidatos(idl, texto):
+                df.loc[df['ID_Linea'] == idl, 'Candidatos_Conciliacion'] = texto
 
-                pa, pb = ra['Periodo_Contable'], rb['Periodo_Contable']
-                if exigir_mismo_periodo:
-                    if pa == 'SIN_FECHA_CONTABLE' or pb == 'SIN_FECHA_CONTABLE':
-                        return False, "Sin periodo contable valido", False
-                    if pa != pb:
-                        return False, f"Periodo distinto ({pa} vs {pb})", False
+            usados = set()
 
-                fa, fb = ra['Fecha_Calc'], rb['Fecha_Calc']
+            def gate_seguridad(id40, id50, exigir_importe_exacto=True, tolerancia_valor=None):
+                """
+                Verifica reglas transversales:
+                - Regla general: Fecha F debe coincidir EXACTO para 'ok_total'.
+                  Si difiere <= TOPE_DIAS_ALERTA -> ok_con_alerta_fecha=True.
+                  Si difiere más -> bloqueado.
+                - Banco debe coincidir; si no, se marca ok_banco=False (Regla 6).
+                - Sector: si ambos lados tienen sector clasificado y son
+                  distintos -> bloqueado (nunca se cruzan sectores distintos).
+                - Importe: exacto o con diferencia <= tolerancia_valor
+                  (Regla 5 / morado, tope $500 por defecto).
+                Retorna dict con banderas para que el llamador decida el color.
+                """
+                ra = df.loc[df['ID_Linea'] == id40].iloc[0]
+                rb = df.loc[df['ID_Linea'] == id50].iloc[0]
+
+                resultado = {
+                    'ok': False, 'motivo': '', 'dif_dias': None,
+                    'mismo_banco': False, 'banco_a': '', 'banco_b': '',
+                    'dif_valor': None, 'pct_valor': None,
+                    'mismo_sector': True, 'es_nequi': False
+                }
+
+                fa, fb = ra['Fecha_F'], rb['Fecha_F']
                 if pd.isna(fa) or pd.isna(fb):
-                    return False, "Fecha valor invalida", False
-
+                    resultado['motivo'] = "Fecha F inválida"
+                    return resultado
                 dif_dias = abs((fa - fb).days)
-                es_alerta = dif_dias > 0
+                resultado['dif_dias'] = dif_dias
                 if dif_dias > TOPE_DIAS_ALERTA:
-                    return False, f"Diferencia de fecha fuera de rango ({dif_dias} dias)", False
+                    resultado['motivo'] = f"Diferencia de fecha F fuera de rango ({dif_dias} días > {TOPE_DIAS_ALERTA})"
+                    return resultado
 
                 banco_a = str(ra[col_banco]).strip()
                 banco_b = str(rb[col_banco]).strip()
-                if banco_a != banco_b:
-                    return False, f"Banco distinto ({banco_a} vs {banco_b})", False
+                resultado['banco_a'] = banco_a
+                resultado['banco_b'] = banco_b
+                resultado['mismo_banco'] = (banco_a == banco_b)
 
-                if exigir_mismo_importe:
-                    imp_a = abs(ra[col_importe])
-                    imp_b = abs(rb[col_importe])
-                    if round(imp_a, 2) != round(imp_b, 2):
-                        return False, "Importe distinto", False
+                sector_a = str(ra.get('Sector', '')).strip()
+                sector_b = str(rb.get('Sector', '')).strip()
+                if sector_a not in ('', 'Sin clasificar') and sector_b not in ('', 'Sin clasificar'):
+                    if sector_a != sector_b:
+                        resultado['motivo'] = f"Sector distinto ({sector_a} vs {sector_b})"
+                        resultado['mismo_sector'] = False
+                        return resultado
 
-                dist_a = str(ra.get('Distribuidora', '')).strip()
-                dist_b = str(rb.get('Distribuidora', '')).strip()
-                if dist_a not in ('', 'Sin clasificar') and dist_b not in ('', 'Sin clasificar'):
-                    if dist_a != dist_b:
-                        return False, f"Distribuidora distinta ({dist_a} vs {dist_b})", False
+                imp_a = abs(ra[col_I])
+                imp_b = abs(rb[col_I])
+                dif_valor = round(abs(imp_a - imp_b), 2)
+                max_imp = max(imp_a, imp_b, 1)
+                pct_valor = dif_valor / max_imp
+                resultado['dif_valor'] = dif_valor
+                resultado['pct_valor'] = pct_valor
 
-                periodo_distinto_txt = ""
-                if not exigir_mismo_periodo and pa != pb and pa != 'SIN_FECHA_CONTABLE' and pb != 'SIN_FECHA_CONTABLE':
-                    periodo_distinto_txt = f" [Periodo contable distinto: {pa} vs {pb}, permitido por Referencia exacta]"
+                if exigir_importe_exacto and dif_valor > 0:
+                    tope = tolerancia_valor if tolerancia_valor is not None else 0
+                    if dif_valor > tope:
+                        resultado['motivo'] = f"Importe distinto (dif ${dif_valor:,.0f})"
+                        return resultado
 
-                if bool(ra.get('Es_Nequi', False)) or bool(rb.get('Es_Nequi', False)):
-                    return True, f"Candidato NEQUI: requiere verificacion manual{periodo_distinto_txt}", es_alerta
+                resultado['es_nequi'] = bool(ra.get('Es_Nequi', False)) or bool(rb.get('Es_Nequi', False))
+                resultado['ok'] = True
+                resultado['motivo'] = "Cumple reglas transversales"
+                return resultado
 
-                return True, f"Candidato valido (reglas transversales cumplidas){periodo_distinto_txt}", es_alerta
+            def clasificar_y_registrar(id40, id50, base_txt):
+                """
+                Aplica el resultado del gate_seguridad y asigna el
+                ESTADO + COLOR correctos según las reglas de alerta:
+                - Regla 7 (salmón): fecha F difiere 1-4 días, resto OK.
+                - Regla 6 (durazno): banco distinto, resto OK.
+                - Regla morado: valor difiere hasta $500 (o tol_valor_purpura),
+                  resto OK.
+                - Azul: todo coincide exacto.
+                Prioridad de reporte: si hay varias diferencias a la vez,
+                se listan todas en el comentario pero el estado dominante
+                sigue el orden: banco > fecha > valor (así el usuario ve
+                primero el problema estructural más fuerte).
+                """
+                res = gate_seguridad(id40, id50, exigir_importe_exacto=True, tolerancia_valor=tol_valor_abs_general)
+                if not res['ok']:
+                    return False, res['motivo']
 
-            def escribir_candidato(id_a, id_b, estado_si_ok, comentario_base, exigir_mismo_importe=True, exigir_mismo_periodo=True):
-                ok, motivo, es_alerta = candidato_seguro(id_a, id_b, exigir_mismo_importe, exigir_mismo_periodo)
+                texto_candidatos = f"{formato_linea(id40)} | {formato_linea(id50)}"
+                partes_comentario = [base_txt]
+                estado_final = 'Conciliado - Cumple todas las reglas'
 
-                if not ok:
-                    for idx in (id_a, id_b):
-                        anterior = str(df.at[idx, 'Comentario'])
-                        bloqueo = f"Relación bloqueada por regla de seguridad: {motivo}."
-                        df.at[idx, 'Comentario'] = bloqueo if not anterior else anterior + " | " + bloqueo
-                    return False
+                # Regla 6: reclasificación de banco (durazno)
+                if not res['mismo_banco']:
+                    estado_final = 'Reclasificación de banco'
+                    partes_comentario.append(
+                        f"Reclasificación de banco: registrado en '{res['banco_a']}'; "
+                        f"banco esperado '{res['banco_b']}'."
+                    )
+                # Regla 7: diferencia de fecha F hasta tope (salmón)
+                elif res['dif_dias'] and res['dif_dias'] > 0:
+                    estado_final = 'Diferencia de fecha'
+                    partes_comentario.append(
+                        f"Diferencia de fecha: F40 vs F50 difieren {res['dif_dias']} día(s) (tope {TOPE_DIAS_ALERTA})."
+                    )
+                # Regla morado: diferencia de valor hasta $500 (morado)
+                elif res['dif_valor'] and res['dif_valor'] > 0:
+                    estado_final = 'Diferencia de valor'
+                    partes_comentario.append(
+                        f"Diferencia de valor: dif=${res['dif_valor']:,.0f} ({res['pct_valor']*100:.2f}%). "
+                        f"{'Dentro del tope de $' + str(int(tol_valor_purpura)) if res['dif_valor'] <= tol_valor_purpura else 'EXCEDE el tope sugerido de $' + str(int(tol_valor_purpura)) + ', revisar con prioridad'}."
+                    )
+                else:
+                    estado_final = 'Conciliado - Cumple todas las reglas'
 
-                texto_candidatos = f"{formato_doc(id_a)} | {formato_doc(id_b)}"
-                
-                # FIX 2: No degradar el estado Azul a Naranja si cruza exacto. Solo registrarlo en Comentario
-                estado_final = estado_si_ok
-                comentario_final = f"{comentario_base} ({motivo})."
-                if es_alerta:
-                    comentario_final += " [Alerta de fecha]"
+                if res['es_nequi']:
+                    partes_comentario.append("[NEQUI: verificar manual]")
 
-                for idx in (id_a, id_b):
-                    if df.at[idx, 'Estado_Conciliacion'] == 'Pendiente':
-                        df.at[idx, 'Estado_Conciliacion'] = estado_final
-                    df.at[idx, 'Candidatos_Conciliacion'] = texto_candidatos
-                    anterior = str(df.at[idx, 'Comentario'])
-                    df.at[idx, 'Comentario'] = comentario_final if not anterior else anterior + " | " + comentario_final
+                comentario_final = " ".join(partes_comentario)
 
-                return True
+                for idx in (id40, id50):
+                    escribir_estado([idx], estado_final, forzar=False)
+                    escribir_candidatos(idx, texto_candidatos)
+                    escribir_comentario(idx, comentario_final)
 
-            usados_global = set()
+                return True, estado_final
 
-            # =========================================================
-            # NIVEL 1: CRUCES EXACTOS Y MÚLTIPLES
-            # =========================================================
-            df_40 = df[df[col_clave] == '40'].copy()
-            df_50 = df[df[col_clave] == '50'].copy()
-
-            llave_1 = [col_banco, 'Abs_Importe', col_fecha, col_referencia]
-            df_40['T'] = df_40.groupby(llave_1).cumcount()
-            df_50['T'] = df_50.groupby(llave_1).cumcount()
-            c1 = pd.merge(df_40, df_50, on=llave_1 + ['T'], suffixes=('_40', '_50'))
-
-            llave_1_asig = [col_banco, 'Abs_Importe', col_fecha, col_asignacion]
-            llave_1_ref = [col_banco, 'Abs_Importe', col_fecha, col_referencia]
-            df_40['T2'] = df_40.groupby(llave_1_asig).cumcount()
-            df_50['T2'] = df_50.groupby(llave_1_ref).cumcount()
-            c2 = pd.merge(df_40, df_50, left_on=llave_1_asig + ['T2'], right_on=llave_1_ref + ['T2'], suffixes=('_40', '_50'))
-
-            df_40['T3'] = df_40.groupby(llave_1_ref).cumcount()
-            df_50['T3'] = df_50.groupby(llave_1_asig).cumcount()
-            c3 = pd.merge(df_40, df_50, left_on=llave_1_ref + ['T3'], right_on=llave_1_asig + ['T3'], suffixes=('_40', '_50'))
-
-            ind_r1 = set(c1['ID_Temp_40']) | set(c1['ID_Temp_50']) | set(c2['ID_Temp_40']) | set(c2['ID_Temp_50']) | set(c3['ID_Temp_40']) | set(c3['ID_Temp_50'])
-
-            ind_r1_limpio = {i for i in ind_r1 if not df.at[i, 'Tiene_Posiciones_Repetidas']}
-            ind_r1_multi = ind_r1 - ind_r1_limpio
-
-            for c in (c1, c2, c3):
-                for _, r in c.iterrows():
-                    ida, idb = r['ID_Temp_40'], r['ID_Temp_50']
-                    if ida in usados_global or idb in usados_global:
-                        continue
-                    if ida in ind_r1_limpio and idb in ind_r1_limpio:
-                        if escribir_candidato(
-                            ida, idb, 'Conciliado - Cruce exacto',
-                            "Cruce por banco, importe, fecha y referencia/asignación exactos",
-                            exigir_mismo_importe=True, exigir_mismo_periodo=False
-                        ):
-                            usados_global.update([ida, idb])
-
-            for tid in (ind_r1_multi - usados_global):
-                fila_tid = df.loc[tid]
-                n_pos = int(fila_tid['Posiciones_Mismo_Doc'])
-                periodo_g = fila_tid['Periodo_Contable']
-                anterior = str(df.at[tid, 'Comentario'])
-                texto = (
-                    f"Mismo Doc. tiene {n_pos} posiciones idénticas dentro del mismo periodo "
-                    f"{periodo_g}. Se evaluará emparejamiento adicional al final del proceso."
-                )
-                df.at[tid, 'Comentario'] = texto if not anterior else anterior + " | " + texto
-
-            # 1B: Cruce exacto (Referencia Limpia)
-            df_p0 = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
-            df_p0['A_L'] = df_p0['Asignacion_Limpia']
-            df_p0['R_L'] = df_p0['Referencia_Limpia']
-
-            d40b = df_p0[df_p0[col_clave] == '40'].drop(columns=['R_L']).copy()
-            d50b = df_p0[df_p0[col_clave] == '50'].drop(columns=['A_L']).copy()
-            d40b['Tb'] = d40b.groupby([col_banco, 'Abs_Importe', col_fecha, 'Periodo_Contable', 'A_L']).cumcount()
-            d50b['Tb'] = d50b.groupby([col_banco, 'Abs_Importe', col_fecha, 'Periodo_Contable', 'R_L']).cumcount()
-
-            c1b = pd.merge(
-                d40b, d50b,
-                left_on=[col_banco, 'Abs_Importe', col_fecha, 'Periodo_Contable', 'A_L', 'Tb'],
-                right_on=[col_banco, 'Abs_Importe', col_fecha, 'Periodo_Contable', 'R_L', 'Tb'],
-                suffixes=('_40', '_50')
-            )
-            c1b = c1b[c1b['A_L'].notna() & (c1b['A_L'] != '')]
-
-            for _, r in c1b.iterrows():
-                ida, idb = r['ID_Temp_40'], r['ID_Temp_50']
-                if ida in usados_global or idb in usados_global:
-                    continue
-                tiene_multi = df.at[ida, 'Tiene_Posiciones_Repetidas'] or df.at[idb, 'Tiene_Posiciones_Repetidas']
-                if tiene_multi:
-                    n_pos_a = int(df.at[ida, 'Posiciones_Mismo_Doc'])
-                    df.loc[[ida, idb], 'Estado_Conciliacion'] = 'Sugerencia fuerte - Doc. con posiciones múltiples (VERIFICAR)'
-                    
-                    ant_a = str(df.at[ida, 'Comentario'])
-                    txt_a = f"Mismo Doc. tiene {n_pos_a} posiciones idénticas (ref. limpia). Se evaluará emparejamiento adicional al final."
-                    df.at[ida, 'Comentario'] = txt_a if not ant_a else ant_a + " | " + txt_a
-                    
-                    ant_b = str(df.at[idb, 'Comentario'])
-                    txt_b = "Posiciones múltiples (ref. limpia). Se evaluará emparejamiento adicional al final."
-                    df.at[idb, 'Comentario'] = txt_b if not ant_b else ant_b + " | " + txt_b
-                    continue
-                if escribir_candidato(
-                    ida, idb, 'Conciliado - Cruce exacto (Ref limpia)',
-                    "Cruce ref limpiada (ej. E3110->3110), banco/importe/fecha/periodo iguales"
-                ):
-                    usados_global.update([ida, idb])
-
-            # 1C: Cruce Múltiple Datáfonos M:N (IP vs CB) - SUMA EXACTA
-            ind_1c_ipcb = set()
+            # =====================================================
+            # 5. REGLA 3 — DOCUMENTOS IP (puntos de venta)
+            #    Solo concilian por referencia homologada de BD, NUNCA
+            #    por simple fecha+importe.
+            # =====================================================
+            ind_ip_exacto = set()
+            ind_ip_tolerancia = set()
             if usar_ipcb:
-                df_p_ipcb = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
-                df_p_ipcb['Ref_H'] = df_p_ipcb.apply(obtener_ref_homologada, axis=1)
-                df_vp = df_p_ipcb[df_p_ipcb['Ref_H'].notna()]
+                df['Ref_H_Homologada'] = df.apply(obtener_ref_homologada, axis=1)
 
-                df_ip = df_vp[(df_vp[col_clase_doc].astype(str).str.upper() == 'IP') & (df_vp[col_clave] == '40')]
-                df_cb = df_vp[(df_vp[col_clase_doc].astype(str).str.upper() == 'CB') & (df_vp[col_clave] == '50')]
+                df_ip = df[(df[col_C].astype(str).str.upper() == 'IP') & (df[col_G] == '40') & df['Ref_H_Homologada'].notna()]
+                df_cb = df[(df[col_C].astype(str).str.upper() == 'CB') & (df[col_G] == '50') & df['Ref_H_Homologada'].notna()]
 
                 if not df_ip.empty and not df_cb.empty:
-                    grp_ip = df_ip.groupby([col_banco, 'Periodo_Contable', 'Ref_H'])['Abs_Importe'].sum().reset_index(name='S_IP')
-                    grp_cb = df_cb.groupby([col_banco, 'Periodo_Contable', 'Ref_H'])['Abs_Importe'].sum().reset_index(name='S_CB')
+                    grp_ip = df_ip.groupby([col_banco, 'Ref_H_Homologada'])['Abs_I'].sum().reset_index(name='S_IP')
+                    grp_cb = df_cb.groupby([col_banco, 'Ref_H_Homologada'])['Abs_I'].sum().reset_index(name='S_CB')
+                    m = pd.merge(grp_cb, grp_ip, on=[col_banco, 'Ref_H_Homologada'])
+                    m['DifV'] = (m['S_CB'] - m['S_IP']).abs()
+                    max_s = m[['S_CB', 'S_IP']].max(axis=1).clip(lower=1)
+                    m['Pct'] = m['DifV'] / max_s
 
-                    m_ipcb = pd.merge(grp_cb, grp_ip, on=[col_banco, 'Periodo_Contable', 'Ref_H'])
-                    matches_ipcb = m_ipcb[m_ipcb['S_CB'].round(2) == m_ipcb['S_IP'].round(2)]
+                    exactos = m[m['DifV'].round(2) == 0]
+                    con_tol = m[(m['DifV'] > 0) & ((m['DifV'] <= tol_valor_abs_general) | (m['Pct'] <= tol_valor_pct_general))]
 
-                    for _, m in matches_ipcb.iterrows():
-                        b, periodo, rh = m[col_banco], m['Periodo_Contable'], m['Ref_H']
-                        sub_ip = df_ip[(df_ip[col_banco] == b) & (df_ip['Periodo_Contable'] == periodo) & (df_ip['Ref_H'] == rh)]
-                        sub_cb = df_cb[(df_cb[col_banco] == b) & (df_cb['Periodo_Contable'] == periodo) & (df_cb['Ref_H'] == rh)]
-
-                        ip_ids = [i for i in sub_ip['ID_Temp'].tolist() if i not in usados_global]
-                        cb_ids = [i for i in sub_cb['ID_Temp'].tolist() if i not in usados_global]
+                    def procesar_grupo_ip(fila, es_exacto):
+                        b, rh = fila[col_banco], fila['Ref_H_Homologada']
+                        sub_ip = df_ip[(df_ip[col_banco] == b) & (df_ip['Ref_H_Homologada'] == rh)]
+                        sub_cb = df_cb[(df_cb[col_banco] == b) & (df_cb['Ref_H_Homologada'] == rh)]
+                        ip_ids = [i for i in sub_ip['ID_Linea'].tolist() if i not in usados]
+                        cb_ids = [i for i in sub_cb['ID_Linea'].tolist() if i not in usados]
                         if not ip_ids or not cb_ids:
-                            continue
-
-                        algun_par_valido = any(
-                            candidato_seguro(a, c, exigir_mismo_importe=False)[0]
-                            for a in ip_ids for c in cb_ids
-                        )
-                        if not algun_par_valido:
-                            for idx in ip_ids + cb_ids:
-                                anterior = str(df.at[idx, 'Comentario'])
-                                bloqueo = "Cruce IP/CB agregado bloqueado: ninguna posición individual cumple fecha/periodo."
-                                df.at[idx, 'Comentario'] = bloqueo if not anterior else anterior + " | " + bloqueo
-                            continue
-
-                        ind_1c_ipcb.update(ip_ids + cb_ids)
-                        usados_global.update(ip_ids + cb_ids)
-
-                        texto_candidatos = " | ".join(formato_doc(i) for i in ip_ids + cb_ids)
-                        txt = f"Cruce múltiple ({len(ip_ids)} IP = {len(cb_ids)} CB). Ref: {rh}. Periodo: {periodo}."
+                            return
+                        usados.update(ip_ids + cb_ids)
+                        texto_cand = " | ".join(formato_linea(i) for i in ip_ids + cb_ids)
+                        if es_exacto:
+                            estado = 'Conciliado - Cruce múltiple IP/CB (Regla 3)'
+                            ind_ip_exacto.update(ip_ids + cb_ids)
+                            txt = f"Cruce múltiple homologado ({len(ip_ids)} IP = {len(cb_ids)} CB). Ref. homologada: {rh}."
+                        else:
+                            estado = 'Diferencia de valor'
+                            ind_ip_tolerancia.update(ip_ids + cb_ids)
+                            txt = (
+                                f"Sugerencia IP/CB con diferencia de valor "
+                                f"(${fila['DifV']:,.0f} / {fila['Pct']*100:.2f}%). "
+                                f"Suma {len(ip_ids)} IP vs {len(cb_ids)} CB. Ref. homologada: {rh}."
+                            )
                         for idx in ip_ids + cb_ids:
-                            df.at[idx, 'Estado_Conciliacion'] = 'Conciliado - Cruce múltiple'
-                            df.at[idx, 'Candidatos_Conciliacion'] = texto_candidatos
+                            df.loc[df['ID_Linea'] == idx, 'Estado_Conciliacion'] = estado
+                            df.loc[df['ID_Linea'] == idx, 'Candidatos_Conciliacion'] = texto_cand
                             otros = resumen_docs(sub_cb) if idx in ip_ids else resumen_docs(sub_ip)
-                            anterior = str(df.at[idx, 'Comentario'])
-                            nuevo_com = f"{txt} Docs relacionados: {otros}"
-                            df.at[idx, 'Comentario'] = nuevo_com if not anterior else anterior + " | " + nuevo_com
+                            df.loc[df['ID_Linea'] == idx, 'Comentario'] = f"{txt} Docs relacionados: {otros}"
 
-            # 1C-BIS: Cruce Múltiple IP vs CB CON tolerancia de valor
-            # FIX 3: clip(lower=1) para evitar divisiones por 0
-            ind_1c_bis_ipcb = set()
+                    for _, fila in exactos.iterrows():
+                        procesar_grupo_ip(fila, es_exacto=True)
+                    for _, fila in con_tol.iterrows():
+                        procesar_grupo_ip(fila, es_exacto=False)
+
+                # Todo lo demas de clase IP que no obtuvo referencia homologada
+                # NUNCA se concilia por fecha+importe simple (Regla 3 explicita).
+                ip_sin_resolver = df[(df[col_C].astype(str).str.upper() == 'IP') & (~df['ID_Linea'].isin(usados))]
+                for idl in ip_sin_resolver['ID_Linea']:
+                    escribir_comentario(idl, "PDV (IP): requiere referencia homologada de base de datos para conciliar. Sin coincidencia por ahora.", append=False)
+
+            # =====================================================
+            # 6. REGLA 1 — A debe coincidir con H (exacto), documento
+            #    único por lado, F exacta, banco y sector coherentes.
+            #    Se procesa por LINEA (no por documento agregado), lo
+            #    que resuelve automáticamente la Regla 4 (documentos
+            #    repetidos) porque cada posición usa su propia llave.
+            # =====================================================
+            df_40 = df[(df[col_G] == '40')].copy()
+            df_50 = df[(df[col_G] == '50')].copy()
             if usar_ipcb:
-                df_p_ipcb_bis = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
-                df_p_ipcb_bis['Ref_H'] = df_p_ipcb_bis.apply(obtener_ref_homologada, axis=1)
-                df_vp_bis = df_p_ipcb_bis[df_p_ipcb_bis['Ref_H'].notna()]
+                df_40 = df_40[df_40[col_C].astype(str).str.upper() != 'IP']
+                df_50 = df_50[df_50[col_C].astype(str).str.upper() != 'IP']
 
-                df_ip_bis = df_vp_bis[(df_vp_bis[col_clase_doc].astype(str).str.upper() == 'IP') & (df_vp_bis[col_clave] == '40')]
-                df_cb_bis = df_vp_bis[(df_vp_bis[col_clase_doc].astype(str).str.upper() == 'CB') & (df_vp_bis[col_clave] == '50')]
+            def emparejar_1a1_por_llave(sub40, sub50, llave40, llave50, base_txt, exigir_importe_exacto_estricto=True):
+                """
+                Empareja 1 a 1 dentro de cada valor de llave (misma llave en
+                ambos lados), asignando posición por orden de Nº documento
+                para desambiguar cuando hay varias líneas iguales
+                (Regla 4: cada B usado una sola vez por lado).
+                """
+                s40 = sub40[~sub40['ID_Linea'].isin(usados)].copy()
+                s50 = sub50[~sub50['ID_Linea'].isin(usados)].copy()
+                if s40.empty or s50.empty:
+                    return
+                s40['_pos'] = s40.groupby(llave40).cumcount()
+                s50['_pos'] = s50.groupby(llave50).cumcount()
+                merged = pd.merge(
+                    s40, s50, left_on=llave40 + ['_pos'], right_on=llave50 + ['_pos'],
+                    suffixes=('_40', '_50')
+                )
+                for _, r in merged.iterrows():
+                    id40, id50 = r['ID_Linea_40'], r['ID_Linea_50']
+                    if id40 in usados or id50 in usados:
+                        continue
+                    ok, estado_final = clasificar_y_registrar(id40, id50, base_txt)
+                    if ok:
+                        usados.update([id40, id50])
+                    else:
+                        escribir_comentario(id40, f"Relación bloqueada: {estado_final}")
+                        escribir_comentario(id50, f"Relación bloqueada: {estado_final}")
 
-                if not df_ip_bis.empty and not df_cb_bis.empty:
-                    grp_ip_bis = df_ip_bis.groupby([col_banco, 'Periodo_Contable', 'Ref_H'])['Abs_Importe'].sum().reset_index(name='S_IP')
-                    grp_cb_bis = df_cb_bis.groupby([col_banco, 'Periodo_Contable', 'Ref_H'])['Abs_Importe'].sum().reset_index(name='S_CB')
+            # 1) A == H exacto (sin limpiar), + banco + importe como llave de
+            #    agrupación (fecha F se valida dentro de clasificar_y_registrar)
+            emparejar_1a1_por_llave(
+                df_40, df_50,
+                [col_banco, 'Abs_I', col_A], [col_banco, 'Abs_I', col_H],
+                "Regla 1: Asignación (A) coincide exacta con Referencia (H)."
+            )
 
-                    m_ipcb_bis = pd.merge(grp_cb_bis, grp_ip_bis, on=[col_banco, 'Periodo_Contable', 'Ref_H'])
-                    m_ipcb_bis['DifV'] = (m_ipcb_bis['S_CB'] - m_ipcb_bis['S_IP']).abs()
-                    max_suma = m_ipcb_bis[['S_CB', 'S_IP']].max(axis=1).clip(lower=1)
-                    m_ipcb_bis['Pct'] = m_ipcb_bis['DifV'] / max_suma
+            # 2) A_Limpia == H_Limpia (ej. "E3110" -> "3110")
+            df_40 = df_40[~df_40['ID_Linea'].isin(usados)]
+            df_50 = df_50[~df_50['ID_Linea'].isin(usados)]
+            emparejar_1a1_por_llave(
+                df_40[df_40['A_Limpia'] != ''], df_50[df_50['H_Limpia'] != ''],
+                [col_banco, 'Abs_I', 'A_Limpia'], [col_banco, 'Abs_I', 'H_Limpia'],
+                "Regla 1 (limpia): Asignación limpia coincide con Referencia limpia (ej. E3110→3110)."
+            )
 
-                    matches_tolerancia = m_ipcb_bis[
-                        (m_ipcb_bis['DifV'] > 0)
-                        & ((m_ipcb_bis['DifV'] <= tol_valor_abs) | (m_ipcb_bis['Pct'] <= tol_valor_pct))
-                    ]
+            # =====================================================
+            # 7. REGLA 2 — SECTORIZACIÓN (cuando A != H)
+            #    Solo SUGERENCIA VERDE, nunca azul, porque la Referencia
+            #    específica no coincidió.
+            # =====================================================
+            df_40 = df_40[~df_40['ID_Linea'].isin(usados)]
+            df_50 = df_50[~df_50['ID_Linea'].isin(usados)]
 
-                    for _, m in matches_tolerancia.iterrows():
-                        b, periodo, rh = m[col_banco], m['Periodo_Contable'], m['Ref_H']
-                        dif_v, pct_v = m['DifV'], m['Pct']
+            d40_sect = df_40[df_40['Sector'] != 'Sin clasificar']
+            d50_sect = df_50[df_50['Sector'] != 'Sin clasificar']
 
-                        sub_ip = df_ip_bis[(df_ip_bis[col_banco] == b) & (df_ip_bis['Periodo_Contable'] == periodo) & (df_ip_bis['Ref_H'] == rh)]
-                        sub_cb = df_cb_bis[(df_cb_bis[col_banco] == b) & (df_cb_bis['Periodo_Contable'] == periodo) & (df_cb_bis['Ref_H'] == rh)]
-
-                        ip_ids = [i for i in sub_ip['ID_Temp'].tolist() if i not in usados_global]
-                        cb_ids = [i for i in sub_cb['ID_Temp'].tolist() if i not in usados_global]
-                        if not ip_ids or not cb_ids:
-                            continue
-
-                        algun_par_valido = any(
-                            candidato_seguro(a, c, exigir_mismo_importe=False)[0]
-                            for a in ip_ids for c in cb_ids
-                        )
-                        if not algun_par_valido:
-                            continue
-
-                        ind_1c_bis_ipcb.update(ip_ids + cb_ids)
-                        usados_global.update(ip_ids + cb_ids)
-
-                        texto_candidatos = " | ".join(formato_doc(i) for i in ip_ids + cb_ids)
-                        txt = (
-                            f"Sugerencia: cruce múltiple IP/CB con diferencia de valor "
-                            f"(${dif_v:,.0f} / {pct_v*100:.2f}%). Suma {len(ip_ids)} IP vs "
-                            f"{len(cb_ids)} CB. Ref: {rh}. Periodo: {periodo}. Requiere verificación manual."
-                        )
-                        for idx in ip_ids + cb_ids:
-                            df.at[idx, 'Estado_Conciliacion'] = 'Sugerencia - Cruce múltiple IP/CB con diferencia de valor'
-                            df.at[idx, 'Candidatos_Conciliacion'] = texto_candidatos
-                            otros = resumen_docs(sub_cb) if idx in ip_ids else resumen_docs(sub_ip)
-                            anterior = str(df.at[idx, 'Comentario'])
-                            nuevo_com = f"{txt} Docs relacionados: {otros}"
-                            df.at[idx, 'Comentario'] = nuevo_com if not anterior else anterior + " | " + nuevo_com
-
-            # =========================================================
-            # NIVEL 2: SECTORIZACION, CRUCE UNICO, VALOR REDONDO
-            # =========================================================
-            df_p1d = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
-            if usar_ipcb:
-                df_p1d = df_p1d[df_p1d[col_clase_doc].astype(str).str.upper() != 'IP']
-
-            df_sect = df_p1d[df_p1d['Distribuidora'] != 'Sin clasificar']
-            d40c = df_sect[df_sect[col_clave] == '40'].copy()
-            d50c = df_sect[df_sect[col_clave] == '50'].copy()
-
-            ind_r1d_f = set(); ind_r1d_a = set()
-            com_r1d_a = {}
-            cand_r1d_a = {}
-
-            if not d40c.empty and not d50c.empty:
-                for grp, sub40 in d40c.groupby([col_banco, 'Abs_Importe', col_fecha, 'Periodo_Contable', 'Distribuidora']):
-                    b, imp, f, periodo, dist = grp
-                    sub50 = d50c[
-                        (d50c[col_banco] == b) & (d50c['Abs_Importe'] == imp) &
-                        (d50c[col_fecha] == f) & (d50c['Periodo_Contable'] == periodo) &
-                        (d50c['Distribuidora'] == dist)
+            if not d40_sect.empty and not d50_sect.empty:
+                for grp, sub40 in d40_sect.groupby([col_banco, 'Abs_I', 'Sector']):
+                    b, imp, sector = grp
+                    sub50 = d50_sect[
+                        (d50_sect[col_banco] == b) & (d50_sect['Abs_I'] == imp) & (d50_sect['Sector'] == sector)
                     ]
                     if sub50.empty:
                         continue
-
-                    s40_ord = sub40[~sub40['ID_Temp'].isin(usados_global)].sort_values(col_doc)
-                    s50_ord = sub50[~sub50['ID_Temp'].isin(usados_global)].sort_values(col_doc)
+                    s40_ord = sub40[~sub40['ID_Linea'].isin(usados)].sort_values('Fecha_F')
+                    s50_ord = sub50[~sub50['ID_Linea'].isin(usados)].sort_values('Fecha_F')
                     if s40_ord.empty or s50_ord.empty:
                         continue
 
-                    if len(s40_ord) == 1 and len(s50_ord) == 1:
-                        r40, r50 = s40_ord.iloc[0], s50_ord.iloc[0]
-                        ida, idb = r40['ID_Temp'], r50['ID_Temp']
-                        if escribir_candidato(
-                            ida, idb, 'Conciliado - Cruce Distribuidora',
-                            f"Candidato único sede ({dist})"
-                        ):
-                            usados_global.update([ida, idb])
-                    elif len(s40_ord) == len(s50_ord):
-                        for (_, r40), (_, r50) in zip(s40_ord.iterrows(), s50_ord.iterrows()):
-                            ida, idb = r40['ID_Temp'], r50['ID_Temp']
-                            if ida in usados_global or idb in usados_global:
-                                continue
-                            if escribir_candidato(
-                                ida, idb, "Sugerencia fuerte: Sectorización (FIFO)",
-                                f"Sede '{dist}' emparejado FIFO (VERIFICAR, no confirmado por referencia)"
-                            ):
-                                ind_r1d_f.update([ida, idb])
-                                usados_global.update([ida, idb])
-                    else:
-                        docs50_txt = resumen_docs(s50_ord)
-                        docs40_txt = resumen_docs(s40_ord)
-                        for _, r in s40_ord.iterrows():
-                            ind_r1d_a.add(r['ID_Temp'])
-                            com_r1d_a[r['ID_Temp']] = f"Sede '{dist}' desbalance ({len(s40_ord)} vs {len(s50_ord)}). Créditos: {docs50_txt}"
-                            cand_r1d_a[r['ID_Temp']] = f"{formato_doc(r['ID_Temp'])} | Candidatos posibles (créditos): {docs50_txt}"
-                        for _, r in s50_ord.iterrows():
-                            ind_r1d_a.add(r['ID_Temp'])
-                            com_r1d_a[r['ID_Temp']] = f"Sede '{dist}' desbalance ({len(s50_ord)} vs {len(s40_ord)}). Débitos: {docs40_txt}"
-                            cand_r1d_a[r['ID_Temp']] = f"{formato_doc(r['ID_Temp'])} | Candidatos posibles (débitos): {docs40_txt}"
+                    n_pares = min(len(s40_ord), len(s50_ord))
+                    for i in range(n_pares):
+                        r40, r50 = s40_ord.iloc[i], s50_ord.iloc[i]
+                        id40, id50 = r40['ID_Linea'], r50['ID_Linea']
+                        if id40 in usados or id50 in usados:
+                            continue
+                        res = gate_seguridad(id40, id50, exigir_importe_exacto=True, tolerancia_valor=0)
+                        if not res['ok']:
+                            continue
+                        texto_cand = f"{formato_linea(id40)} | {formato_linea(id50)}"
+                        dif_txt = f" (F difiere {res['dif_dias']} día(s))" if res['dif_dias'] else ""
+                        comentario = (
+                            f"Sugerencia por sectorización '{sector}': Asignación NO coincide exacta con "
+                            f"Referencia, pero el sector sí. Requiere verificación manual de Referencia{dif_txt}."
+                        )
+                        for idx in (id40, id50):
+                            df.loc[df['ID_Linea'] == idx, 'Estado_Conciliacion'] = f"Sugerencia - Sectorización ({sector})"
+                            df.loc[df['ID_Linea'] == idx, 'Candidatos_Conciliacion'] = texto_cand
+                            df.loc[df['ID_Linea'] == idx, 'Comentario'] = comentario
+                        usados.update([id40, id50])
 
-            set_estado(ind_r1d_a, 'Sugerencia: Sugerencia por Distribuidora Multiples')
-            set_comentarios(com_r1d_a)
-            for idt, txt_cand in cand_r1d_a.items():
-                df.at[idt, 'Candidatos_Conciliacion'] = txt_cand
+                    # Sobrantes desbalanceados -> listar candidatos (Regla 4)
+                    rem40 = s40_ord[~s40_ord['ID_Linea'].isin(usados)]
+                    rem50 = s50_ord[~s50_ord['ID_Linea'].isin(usados)]
+                    if not rem40.empty or not rem50.empty:
+                        docs50_txt = resumen_docs(rem50)
+                        docs40_txt = resumen_docs(rem40)
+                        for _, r in rem40.iterrows():
+                            df.loc[df['ID_Linea'] == r['ID_Linea'], 'Estado_Conciliacion'] = f"Sugerencia - Sectorización desbalanceada ({sector})"
+                            df.loc[df['ID_Linea'] == r['ID_Linea'], 'Candidatos_Conciliacion'] = f"{formato_linea(r['ID_Linea'])} | Candidatos posibles: {docs50_txt}"
+                            df.loc[df['ID_Linea'] == r['ID_Linea'], 'Comentario'] = f"Sector '{sector}' desbalanceado ({len(rem40)} vs {len(rem50)}). Créditos candidatos: {docs50_txt}"
+                        for _, r in rem50.iterrows():
+                            df.loc[df['ID_Linea'] == r['ID_Linea'], 'Estado_Conciliacion'] = f"Sugerencia - Sectorización desbalanceada ({sector})"
+                            df.loc[df['ID_Linea'] == r['ID_Linea'], 'Candidatos_Conciliacion'] = f"{formato_linea(r['ID_Linea'])} | Candidatos posibles: {docs40_txt}"
+                            df.loc[df['ID_Linea'] == r['ID_Linea'], 'Comentario'] = f"Sector '{sector}' desbalanceado ({len(rem50)} vs {len(rem40)}). Débitos candidatos: {docs40_txt}"
 
-            df_p = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
-            if usar_ipcb:
-                df_p = df_p[df_p[col_clase_doc].astype(str).str.upper() != 'IP']
-            grp_c = [col_banco, 'Abs_Importe', col_fecha, 'Periodo_Contable']
+            # =====================================================
+            # 8. EXCEPCIÓN NEQUI (A = "Nequi", C = DZ)
+            #    Puede buscar candidato G=50 que NO cumpla A==H, pero
+            #    exige: banco igual, F igual, único candidato, importe
+            #    exacto o diferencia <= tol_valor_purpura, y sector
+            #    coherente si ambos lados son clasificables.
+            # =====================================================
+            df_40 = df_40[~df_40['ID_Linea'].isin(usados)]
+            df_50 = df_50[~df_50['ID_Linea'].isin(usados)]
 
-            df_p40, df_p50 = df_p[df_p[col_clave] == '40'].copy(), df_p[df_p[col_clave] == '50'].copy()
-            df_p40['n40'] = df_p40.groupby(grp_c)['ID_Temp'].transform('count')
-            df_p50['n50'] = df_p50.groupby(grp_c)['ID_Temp'].transform('count')
+            df_nequi_40 = df_40[df_40['Es_Nequi'] == True]
 
-            u40, u50 = df_p40[df_p40['n40'] == 1], df_p50[df_p50['n50'] == 1]
-            c_un = pd.merge(u40, u50, on=grp_c, suffixes=('_40', '_50'))
-
-            ind_r2 = set()
-            for _, r in c_un.iterrows():
-                ida, idb = r['ID_Temp_40'], r['ID_Temp_50']
-                if ida in usados_global or idb in usados_global:
+            for _, r40 in df_nequi_40.iterrows():
+                id40 = r40['ID_Linea']
+                if id40 in usados:
                     continue
-                if escribir_candidato(ida, idb, 'Conciliado - Cruce unico', "Único candidato en banco/importe/fecha/periodo, sin referencia distintiva"):
-                    ind_r2.update([ida, idb])
-                    usados_global.update([ida, idb])
+                candidatos_50 = df_50[
+                    (df_50[col_banco] == r40[col_banco]) &
+                    (df_50['Fecha_F'] == r40['Fecha_F']) &
+                    (~df_50['ID_Linea'].isin(usados))
+                ]
+                if candidatos_50.empty:
+                    continue
 
-            rem40 = df_p40[~df_p40['ID_Temp'].isin(ind_r2 | usados_global)]
-            rem50 = df_p50[~df_p50['ID_Temp'].isin(ind_r2 | usados_global)]
+                # Filtrar por sector coherente si aplica
+                if r40['Sector'] != 'Sin clasificar':
+                    candidatos_filtrados = candidatos_50[
+                        (candidatos_50['Sector'] == r40['Sector']) | (candidatos_50['Sector'] == 'Sin clasificar')
+                    ]
+                    if not candidatos_filtrados.empty:
+                        candidatos_50 = candidatos_filtrados
 
-            ind_r2d = set()
-            ind_amb = set(); com_amb = {}; cand_amb = {}
+                # Buscar candidatos con importe exacto primero
+                exactos = candidatos_50[candidatos_50['Abs_I'] == r40['Abs_I']]
+                if len(exactos) == 1:
+                    id50 = exactos.iloc[0]['ID_Linea']
+                    texto_cand = f"{formato_linea(id40)} | {formato_linea(id50)}"
+                    df.loc[df['ID_Linea'] == id40, 'Estado_Conciliacion'] = 'Conciliado - Excepción Nequi (candidato único)'
+                    df.loc[df['ID_Linea'] == id50, 'Estado_Conciliacion'] = 'Conciliado - Excepción Nequi (candidato único)'
+                    for idx in (id40, id50):
+                        df.loc[df['ID_Linea'] == idx, 'Candidatos_Conciliacion'] = texto_cand
+                        df.loc[df['ID_Linea'] == idx, 'Comentario'] = (
+                            "Excepción Nequi: candidato único en banco+fecha, importe exacto, sin ambigüedad. "
+                            "Verificado manualmente al no coincidir Asignación/Referencia."
+                        )
+                    usados.update([id40, id50])
+                    continue
 
-            for grp, sub40 in rem40.groupby(grp_c):
-                b, imp, f, periodo = grp
-                sub50 = rem50[
-                    (rem50[col_banco] == b) & (rem50['Abs_Importe'] == imp) &
-                    (rem50[col_fecha] == f) & (rem50['Periodo_Contable'] == periodo)
+                # Si no hay exacto único, buscar dentro de tolerancia $500
+                candidatos_50['_dif'] = (candidatos_50['Abs_I'] - r40['Abs_I']).abs()
+                con_tol = candidatos_50[candidatos_50['_dif'] <= tol_valor_purpura].sort_values('_dif')
+                if len(con_tol) == 1:
+                    id50 = con_tol.iloc[0]['ID_Linea']
+                    dif_v = con_tol.iloc[0]['_dif']
+                    texto_cand = f"{formato_linea(id40)} | {formato_linea(id50)}"
+                    df.loc[df['ID_Linea'] == id40, 'Estado_Conciliacion'] = 'Diferencia de valor'
+                    df.loc[df['ID_Linea'] == id50, 'Estado_Conciliacion'] = 'Diferencia de valor'
+                    for idx in (id40, id50):
+                        df.loc[df['ID_Linea'] == idx, 'Candidatos_Conciliacion'] = texto_cand
+                        df.loc[df['ID_Linea'] == idx, 'Comentario'] = (
+                            f"Excepción Nequi con diferencia de valor: ${dif_v:,.0f} "
+                            f"(tope morado ${tol_valor_purpura:.0f}). Candidato único en banco+fecha."
+                        )
+                    usados.update([id40, id50])
+                    continue
+
+                # Ambiguo o sin candidato válido -> Sugerencia verde
+                if len(exactos) > 1 or len(con_tol) > 1:
+                    docs_txt = resumen_docs(exactos if len(exactos) > 1 else con_tol)
+                    df.loc[df['ID_Linea'] == id40, 'Estado_Conciliacion'] = 'Sugerencia - Excepción Nequi ambigua'
+                    df.loc[df['ID_Linea'] == id40, 'Candidatos_Conciliacion'] = f"{formato_linea(id40)} | Candidatos posibles: {docs_txt}"
+                    df.loc[df['ID_Linea'] == id40, 'Comentario'] = (
+                        f"Excepción Nequi: {len(exactos) if len(exactos)>1 else len(con_tol)} candidatos posibles, "
+                        "requiere selección manual (no se concilia automático por ambigüedad)."
+                    )
+
+            # =====================================================
+            # 9. REGLA 4 — DOCUMENTOS DZ CON POSICIONES MÚLTIPLES
+            #    (B se repite conteniendo varias líneas con distintos
+            #    valores). Se listan candidatos ordenados en columna O
+            #    para que el usuario filtre/ordene fácilmente. VERDE.
+            # =====================================================
+            df_40 = df_40[~df_40['ID_Linea'].isin(usados)]
+            df_50 = df_50[~df_50['ID_Linea'].isin(usados)]
+
+            dz_repetidos = df_40[(df_40['B_Repite'] == True) & (df_40['Candidatos_Conciliacion'] == '')]
+            for b_doc, grupo in dz_repetidos.groupby(col_B):
+                for _, linea in grupo.iterrows():
+                    idl = linea['ID_Linea']
+                    if idl in usados:
+                        continue
+                    # Candidatos CB compatibles: mismo banco, fecha F igual o
+                    # dentro del tope, ordenados por calidad de coincidencia
+                    candidatos = df_50[
+                        (df_50[col_banco] == linea[col_banco]) &
+                        (~df_50['ID_Linea'].isin(usados))
+                    ].copy()
+                    if candidatos.empty:
+                        continue
+                    candidatos['_dif_dias'] = candidatos['Fecha_F'].apply(
+                        lambda f: abs((f - linea['Fecha_F']).days) if pd.notna(f) and pd.notna(linea['Fecha_F']) else 999
+                    )
+                    candidatos = candidatos[candidatos['_dif_dias'] <= TOPE_DIAS_ALERTA]
+                    if candidatos.empty:
+                        continue
+                    candidatos['_dif_valor'] = (candidatos['Abs_I'] - linea['Abs_I']).abs()
+                    candidatos['_mismo_sector'] = (candidatos['Sector'] == linea['Sector']) & (linea['Sector'] != 'Sin clasificar')
+                    candidatos['_mismo_A_H'] = candidatos[col_H].astype(str).str.strip() == str(linea[col_A]).strip()
+                    candidatos_ordenados = candidatos.sort_values(
+                        by=['_mismo_A_H', '_mismo_sector', '_dif_valor', '_dif_dias'],
+                        ascending=[False, False, True, True]
+                    )
+                    top_candidatos = candidatos_ordenados.head(5)
+                    lineas_candidatos = []
+                    for rank, (_, c) in enumerate(top_candidatos.iterrows(), start=1):
+                        lineas_candidatos.append(
+                            f"{rank}. Doc={int(c[col_B])}, H={c[col_H]}, I=${c['Abs_I']:,.0f}, "
+                            f"F={c[col_F]}, Sector={c['Sector']}, dif_valor=${c['_dif_valor']:,.0f}, dif_dias={int(c['_dif_dias'])}"
+                        )
+                    texto_cand_final = f"Línea 40: Doc={int(linea[col_B])}, I=${linea['Abs_I']:,.0f}, F={linea[col_F]} || Candidatos: " + " ; ".join(lineas_candidatos)
+                    df.loc[df['ID_Linea'] == idl, 'Estado_Conciliacion'] = 'Sugerencia - DZ posiciones múltiples (verificar)'
+                    df.loc[df['ID_Linea'] == idl, 'Candidatos_Conciliacion'] = texto_cand_final
+                    df.loc[df['ID_Linea'] == idl, 'Comentario'] = (
+                        f"Documento {int(b_doc)} tiene múltiples posiciones/importes distintos. "
+                        f"Se listan hasta 5 candidatos ordenados por calidad de coincidencia en la columna O."
+                    )
+
+            # =====================================================
+            # 10. ÚLTIMO RECURSO: FIFO CONTROLADO
+            #     Solo se ejecuta si: Estado == 'Pendiente' AND
+            #     Comentario == '' AND Candidatos == '' AND
+            #     misma fecha F Y mismo sector (o ambos sin clasificar).
+            #     Esto evita el bug de v24 donde el FIFO sobrescribía
+            #     filas que ya tenían un bloqueo de seguridad registrado.
+            # =====================================================
+            df_40 = df_40[~df_40['ID_Linea'].isin(usados)]
+            df_50 = df_50[~df_50['ID_Linea'].isin(usados)]
+
+            pendientes_40 = df[
+                (df['ID_Linea'].isin(df_40['ID_Linea'])) &
+                (df['Estado_Conciliacion'] == 'Pendiente') &
+                (df['Comentario'] == '') &
+                (df['Candidatos_Conciliacion'] == '')
+            ]
+            pendientes_50 = df[
+                (df['ID_Linea'].isin(df_50['ID_Linea'])) &
+                (df['Estado_Conciliacion'] == 'Pendiente') &
+                (df['Comentario'] == '') &
+                (df['Candidatos_Conciliacion'] == '')
+            ]
+
+            ind_fifo_ok = set()
+            ind_fifo_verde_dz = set()
+
+            for grp, sub40 in pendientes_40.groupby([col_banco, 'Abs_I', col_F, 'Sector']):
+                b, imp, f, sector = grp
+                sub50 = pendientes_50[
+                    (pendientes_50[col_banco] == b) & (pendientes_50['Abs_I'] == imp) &
+                    (pendientes_50[col_F] == f) & (pendientes_50['Sector'] == sector)
                 ]
                 if sub50.empty:
                     continue
-
-                if es_valor_redondo(imp):
-                    s40_ord = sub40[~sub40['ID_Temp'].isin(usados_global)].sort_values(col_doc)
-                    s50_ord = sub50[~sub50['ID_Temp'].isin(usados_global)].sort_values(col_doc)
-                    if s40_ord.empty or s50_ord.empty:
-                        continue
-                    if len(s40_ord) == len(s50_ord):
-                        for (_, r40), (_, r50) in zip(s40_ord.iterrows(), s50_ord.iterrows()):
-                            ida, idb = r40['ID_Temp'], r50['ID_Temp']
-                            if ida in usados_global or idb in usados_global:
-                                continue
-                            if escribir_candidato(
-                                ida, idb, "Sugerencia fuerte: Valor redondo (FIFO)",
-                                f"Valor redondo (${imp:,.0f}) FIFO dentro del mismo periodo {periodo} (VERIFICAR)"
-                            ):
-                                ind_r2d.update([ida, idb])
-                                usados_global.update([ida, idb])
-                    else:
-                        docs50_txt = resumen_docs(sub50)
-                        docs40_txt = resumen_docs(sub40)
-                        for _, r in s40_ord.iterrows():
-                            ind_amb.add(r['ID_Temp']); com_amb[r['ID_Temp']] = f"Confuso ({len(s40_ord)} vs {len(s50_ord)}). Créditos: {docs50_txt}"
-                            cand_amb[r['ID_Temp']] = f"{formato_doc(r['ID_Temp'])} | Candidatos posibles (créditos): {docs50_txt}"
-                        for _, r in s50_ord.iterrows():
-                            ind_amb.add(r['ID_Temp']); com_amb[r['ID_Temp']] = f"Confuso ({len(s50_ord)} vs {len(s40_ord)}). Débitos: {docs40_txt}"
-                            cand_amb[r['ID_Temp']] = f"{formato_doc(r['ID_Temp'])} | Candidatos posibles (débitos): {docs40_txt}"
-                else:
-                    docs50_txt = resumen_docs(sub50)
-                    docs40_txt = resumen_docs(sub40)
-                    for _, r in sub40.iterrows():
-                        ind_amb.add(r['ID_Temp']); com_amb[r['ID_Temp']] = f"{len(sub50)} posibles cruces (mismo periodo {periodo}). Docs: {docs50_txt}"
-                        cand_amb[r['ID_Temp']] = f"{formato_doc(r['ID_Temp'])} | Candidatos posibles: {docs50_txt}"
-                    for _, r in sub50.iterrows():
-                        ind_amb.add(r['ID_Temp']); com_amb[r['ID_Temp']] = f"{len(sub40)} posibles cruces (mismo periodo {periodo}). Docs: {docs40_txt}"
-                        cand_amb[r['ID_Temp']] = f"{formato_doc(r['ID_Temp'])} | Candidatos posibles: {docs40_txt}"
-
-            set_estado(ind_amb - usados_global, 'Sugerencia: Solicitar soporte')
-            set_comentarios(com_amb)
-            for idt, txt_cand in cand_amb.items():
-                if idt not in usados_global:
-                    df.at[idt, 'Candidatos_Conciliacion'] = txt_cand
-
-            # =========================================================
-            # NIVEL 3: ALERTAS DE FECHA, RECLASIFICACION, DIFERENCIA VALOR
-            # *** FIX 4: El drop_duplicates se reemplaza por el seguro estricto
-            # 1 a 1 de N4==1 y N5==1, evitando cruces ambiguos de forma aleatoria ***
-            # =========================================================
-            df_pend = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
-            df_pend = df_pend[~df_pend['ID_Temp'].isin(usados_global)]
-            df_v = df_pend[df_pend['Referencia_Limpia'] != ''].copy()
-
-            df_4n = df_v[df_v[col_clave] == '40'].copy()
-            df_5n = df_v[df_v[col_clave] == '50'].copy()
-
-            sA = pd.merge(df_4n, df_5n, on=[col_banco, 'Abs_Importe', 'Referencia_Limpia', 'Periodo_Contable'], suffixes=('_40', '_50'))
-            sA['Dif'] = (sA['Fecha_Calc_40'] - sA['Fecha_Calc_50']).dt.days.abs()
-            sA = sA[(sA['Dif'] > 0) & (sA['Dif'] <= TOPE_DIAS_ALERTA)]
-            sA['n4'] = sA.groupby('ID_Temp_40')['ID_Temp_50'].transform('count')
-            sA['n5'] = sA.groupby('ID_Temp_50')['ID_Temp_40'].transform('count')
-            sA = sA[(sA['n4'] == 1) & (sA['n5'] == 1)].sort_values('Dif')
-
-            ind_A = set()
-            for _, r in sA.iterrows():
-                ida, idb = r['ID_Temp_40'], r['ID_Temp_50']
-                if ida in usados_global or idb in usados_global:
-                    continue
-                if escribir_candidato(
-                    ida, idb, 'Alerta de texto - Diferencia de fecha (mismo periodo)',
-                    f"Referencia {r['Referencia_Limpia']}, difiere {int(r['Dif'])} día(s), mismo periodo {r['Periodo_Contable']}"
-                ):
-                    ind_A.update([ida, idb])
-                    usados_global.update([ida, idb])
-
-            df_4n = df_4n[~df_4n['ID_Temp'].isin(usados_global)]
-            df_5n = df_5n[~df_5n['ID_Temp'].isin(usados_global)]
-
-            d40_ab = df_4n[df_4n['Asignacion_Limpia'] != ''].copy()
-            d50_ab = df_5n[df_5n['Referencia_Limpia'] != ''].copy()
-
-            sAB = pd.merge(
-                d40_ab, d50_ab,
-                left_on=[col_banco, 'Abs_Importe', 'Asignacion_Limpia', 'Periodo_Contable'],
-                right_on=[col_banco, 'Abs_Importe', 'Referencia_Limpia', 'Periodo_Contable'],
-                suffixes=('_40', '_50')
-            )
-            sAB['Dif_ab'] = (sAB['Fecha_Calc_40'] - sAB['Fecha_Calc_50']).dt.days.abs()
-            sAB = sAB[sAB['Dif_ab'] <= TOPE_DIAS_ALERTA]
-            sAB['n4'] = sAB.groupby('ID_Temp_40')['ID_Temp_50'].transform('count')
-            sAB['n5'] = sAB.groupby('ID_Temp_50')['ID_Temp_40'].transform('count')
-            sAB = sAB[(sAB['n4'] == 1) & (sAB['n5'] == 1)].sort_values('Dif_ab')
-
-            for _, r in sAB.iterrows():
-                ida, idb = r['ID_Temp_40'], r['ID_Temp_50']
-                if ida in usados_global or idb in usados_global:
-                    continue
-                dif = int(r['Dif_ab'])
-                estado_ok = 'Conciliado - Cruce exacto (Ref limpia Asig/Ref)' if dif == 0 else 'Alerta de texto - Diferencia de fecha Ref limpia (mismo periodo)'
-                if escribir_candidato(
-                    ida, idb, estado_ok,
-                    "Ref. limpia coincide (Asignación/Referencia)"
-                ):
-                    usados_global.update([ida, idb])
-
-            df_4n = df_4n[~df_4n['ID_Temp'].isin(usados_global)]
-            df_5n = df_5n[~df_5n['ID_Temp'].isin(usados_global)]
-
-            sB = pd.merge(df_4n, df_5n, on=['Abs_Importe', col_fecha, 'Referencia_Limpia'], suffixes=('_40', '_50'))
-            sB = sB[sB[f'{col_banco}_40'] != sB[f'{col_banco}_50']]
-            sB['n4'] = sB.groupby('ID_Temp_40')['ID_Temp_50'].transform('count')
-            sB['n5'] = sB.groupby('ID_Temp_50')['ID_Temp_40'].transform('count')
-            sB = sB[(sB['n4'] == 1) & (sB['n5'] == 1)]
-
-            ind_B = set()
-            com_B = {}
-            for _, r in sB.iterrows():
-                ida, idb = r['ID_Temp_40'], r['ID_Temp_50']
-                if ida in usados_global or idb in usados_global:
-                    continue
-                if r['Periodo_Contable_40'] != r['Periodo_Contable_50']:
-                    continue
-                ind_B.update([ida, idb])
-                usados_global.update([ida, idb])
-                com_B[ida] = f"Registrado en banco '{r[col_banco+'_50']}'. Doc: {int(r[col_doc+'_50'])}"
-                com_B[idb] = f"Registrado en banco '{r[col_banco+'_40']}'. Doc: {int(r[col_doc+'_40'])}"
-                texto_candidatos = f"{formato_doc(ida)} | {formato_doc(idb)}"
-                df.at[ida, 'Candidatos_Conciliacion'] = texto_candidatos
-                df.at[idb, 'Candidatos_Conciliacion'] = texto_candidatos
-
-            set_estado(ind_B, 'Reclasificación de banco')
-            set_comentarios(com_B)
-
-            df_4n = df_4n[~df_4n['ID_Temp'].isin(usados_global)]
-            df_5n = df_5n[~df_5n['ID_Temp'].isin(usados_global)]
-
-            sC = pd.merge(df_4n, df_5n, on=[col_banco, col_fecha, 'Referencia_Limpia'], suffixes=('_40', '_50'))
-            sC = sC[sC['Periodo_Contable_40'] == sC['Periodo_Contable_50']]
-            sC['DifV'] = (sC['Abs_Importe_40'] - sC['Abs_Importe_50']).abs()
-            # FIX 3: clip(lower=1) para evitar ZeroDivision
-            max_imp = sC[['Abs_Importe_40', 'Abs_Importe_50']].max(axis=1).clip(lower=1)
-            sC['Pct'] = sC['DifV'] / max_imp
-            sC = sC[(sC['DifV'] > 0) & ((sC['DifV'] <= tol_valor_abs) | (sC['Pct'] <= tol_valor_pct))]
-            sC['n4'] = sC.groupby('ID_Temp_40')['ID_Temp_50'].transform('count')
-            sC['n5'] = sC.groupby('ID_Temp_50')['ID_Temp_40'].transform('count')
-            sC = sC[(sC['n4'] == 1) & (sC['n5'] == 1)].sort_values('DifV')
-
-            ind_C = set()
-            com_C = {}
-            for _, r in sC.iterrows():
-                ida, idb = r['ID_Temp_40'], r['ID_Temp_50']
-                if ida in usados_global or idb in usados_global:
-                    continue
-                ind_C.update([ida, idb])
-                usados_global.update([ida, idb])
-                com_C[ida] = f"Diferencia de ${r['DifV']:,.0f} ({r['Pct']*100:.2f}%). Doc: {int(r[col_doc+'_50'])}"
-                com_C[idb] = f"Diferencia de ${r['DifV']:,.0f} ({r['Pct']*100:.2f}%). Doc: {int(r[col_doc+'_40'])}"
-                texto_candidatos = f"{formato_doc(ida)} | {formato_doc(idb)}"
-                df.at[ida, 'Candidatos_Conciliacion'] = texto_candidatos
-                df.at[idb, 'Candidatos_Conciliacion'] = texto_candidatos
-
-            set_estado(ind_C, 'Diferencia en valor')
-            set_comentarios(com_C)
-
-            df_p11d = df[df['Estado_Conciliacion'] == 'Pendiente'].copy()
-            df_p11d = df_p11d[~df_p11d['ID_Temp'].isin(usados_global)]
-            if usar_ipcb:
-                df_p11d = df_p11d[df_p11d[col_clase_doc].astype(str).str.upper() != 'IP']
-
-            d4d, d5d = df_p11d[df_p11d[col_clave] == '40'], df_p11d[df_p11d[col_clave] == '50']
-            if not d4d.empty and not d5d.empty:
-                sD = pd.merge(d4d, d5d, on=[col_banco, col_fecha], suffixes=('_40', '_50'))
-                sD = sD[sD['Periodo_Contable_40'] == sD['Periodo_Contable_50']]
-                sD['DifV'] = (sD['Abs_Importe_40'] - sD['Abs_Importe_50']).abs()
-                max_impD = sD[['Abs_Importe_40', 'Abs_Importe_50']].max(axis=1).clip(lower=1)
-                sD['Pct'] = sD['DifV'] / max_impD
-                sDt = sD[(sD['DifV'] > 0) & ((sD['DifV'] <= tol_valor_abs) | (sD['Pct'] <= tol_valor_pct))].copy()
-                if not sDt.empty:
-                    sDt['n4'] = sDt.groupby('ID_Temp_40')['ID_Temp_50'].transform('count')
-                    sDt['n5'] = sDt.groupby('ID_Temp_50')['ID_Temp_40'].transform('count')
-                    sDu = sDt[(sDt['n4'] == 1) & (sDt['n5'] == 1)]
-
-                    ind_D = set()
-                    com_D = {}
-                    for _, r in sDu.iterrows():
-                        ida, idb = r['ID_Temp_40'], r['ID_Temp_50']
-                        if ida in usados_global or idb in usados_global:
-                            continue
-                        ind_D.update([ida, idb])
-                        usados_global.update([ida, idb])
-                        etiqueta_nequi = " [NEQUI: verificar manual]" if (
-                            bool(df.at[ida, 'Es_Nequi']) or
-                            bool(df.at[idb, 'Es_Nequi'])
-                        ) else ""
-                        com_D[ida] = f"Candidato único en fecha/banco/periodo con dif. de ${r['DifV']:,.0f}.{etiqueta_nequi} Doc: {int(r[col_doc+'_50'])}"
-                        com_D[idb] = f"Candidato único en fecha/banco/periodo con dif. de ${r['DifV']:,.0f}.{etiqueta_nequi} Doc: {int(r[col_doc+'_40'])}"
-                        texto_candidatos = f"{formato_doc(ida)} | {formato_doc(idb)}"
-                        df.at[ida, 'Candidatos_Conciliacion'] = texto_candidatos
-                        df.at[idb, 'Candidatos_Conciliacion'] = texto_candidatos
-
-                    set_estado(ind_D, 'Diferencia en valor (NEQUI)')
-                    set_comentarios(com_D)
-
-            # =========================================================
-            # NIVEL SECTORIZACIÓN EN VALORES REDONDOS 
-            # =========================================================
-            ind_sector_redondos = set()
-            if activar_sector_redondos:
-                pend_sector = df[
-                    (df['Estado_Conciliacion'] == 'Pendiente')
-                    & (df['Candidatos_Conciliacion'] == '')
-                    & (df['Abs_Importe'] > 0)
-                    & (df['Abs_Importe'] % multiplo_redondo == 0)
-                    & (df['Periodo_Contable'] != 'SIN_FECHA_CONTABLE')
-                    & (df['Distribuidora'] != 'Sin clasificar')
-                ].copy()
-                if usar_ipcb:
-                    pend_sector = pend_sector[pend_sector[col_clase_doc].astype(str).str.upper() != 'IP']
-
-                for (banco_g, importe_g, periodo_g, dist_g), grupo_sector in pend_sector.groupby(
-                    [col_banco, 'Abs_Importe', 'Periodo_Contable', 'Distribuidora']
-                ):
-                    lado_40 = grupo_sector[grupo_sector[col_clave] == '40'].sort_values(['Fecha_Calc', 'ID_Temp'])
-                    lado_50 = grupo_sector[grupo_sector[col_clave] == '50'].sort_values(['Fecha_Calc', 'ID_Temp'])
-
-                    n_pares_sector = min(len(lado_40), len(lado_50))
-                    if n_pares_sector == 0:
-                        continue
-
-                    for i in range(n_pares_sector):
-                        fila_40 = lado_40.iloc[i]
-                        fila_50 = lado_50.iloc[i]
-                        id_40 = fila_40['ID_Temp']
-                        id_50 = fila_50['ID_Temp']
-
-                        if id_40 in usados_global or id_50 in usados_global:
-                            continue
-
-                        ok, motivo, es_alerta = candidato_seguro(id_40, id_50, exigir_mismo_importe=True)
-                        if not ok:
-                            continue
-
-                        dif_dias_sector = abs((fila_40['Fecha_Calc'] - fila_50['Fecha_Calc']).days)
-                        if dif_dias_sector == 0:
-                            estado_sector = f"Sugerencia fuerte - Sectorización valor redondo ({dist_g}, mismo día)"
-                        else:
-                            estado_sector = f"Sugerencia fuerte - Sectorización valor redondo ({dist_g}, fechas distintas mismo periodo)"
-
-                        texto_par = f"{formato_doc(id_40)} | {formato_doc(id_50)}"
-                        comentario_sector = (
-                            f"Sectorización '{dist_g}' (derivada de Referencia/Asignación): valor redondo "
-                            f"${importe_g:,.0f} en {banco_g}, periodo {periodo_g}. La Referencia específica "
-                            f"NO coincide exacta entre ambos lados, pero SÍ coincide el sector/sede. "
-                            f"{len(lado_40)} posiciones débito vs {len(lado_50)} posiciones crédito en este "
-                            f"grupo. Diferencia de {dif_dias_sector} día(s). Requiere verificación manual "
-                            f"antes de conciliar - NO se concilia automáticamente."
-                        )
-
-                        for idx in (id_40, id_50):
-                            df.at[idx, 'Estado_Conciliacion'] = estado_sector
-                            df.at[idx, 'Candidatos_Conciliacion'] = texto_par
-                            anterior = str(df.at[idx, 'Comentario'])
-                            df.at[idx, 'Comentario'] = comentario_sector if not anterior else anterior + " | " + comentario_sector
-
-                        ind_sector_redondos.update([id_40, id_50])
-                        usados_global.update([id_40, id_50])
-
-            # =========================================================
-            # EMPAREJAMIENTO FIFO POSICIONAL FINAL
-            # =========================================================
-            def valor_clave_lado(row):
-                if str(row[col_clave]) == '40':
-                    v = row['Asignacion_Limpia'] if row['Asignacion_Limpia'] else row['Referencia_Limpia']
-                else:
-                    v = row['Referencia_Limpia'] if row['Referencia_Limpia'] else row['Asignacion_Limpia']
-                return v
-
-            df['Valor_Clave_Lado'] = df.apply(valor_clave_lado, axis=1)
-
-            def clave_grupo_ampliado(row):
-                banco = str(row[col_banco]).strip()
-                periodo = str(row['Periodo_Contable']).strip()
-                fecha = str(row[col_fecha])
-                valor = str(row['Valor_Clave_Lado']).strip()
-                if valor:
-                    return f"{banco}|{periodo}|{fecha}|REF-{valor}"
-                return None
-
-            df['Grupo_Ampliado_Key'] = df.apply(clave_grupo_ampliado, axis=1)
-
-            pendientes_sin_candidato = df[
-                (df['Candidatos_Conciliacion'] == '')
-                & (df['Estado_Conciliacion'] == 'Pendiente')
-                & df['Grupo_Ampliado_Key'].notna()
-            ].copy()
-
-            ind_fifo_ok = set()
-            ind_fifo_verde_dz_repetido = set()
-            ind_fifo_sin_pareja_neutro = set()
-
-            for grupo_key, grupo_df in pendientes_sin_candidato.groupby('Grupo_Ampliado_Key'):
-                lado_40 = grupo_df[grupo_df[col_clave] == '40'].sort_values('ID_Temp')
-                lado_50 = grupo_df[grupo_df[col_clave] == '50'].sort_values('ID_Temp')
-
-                n_pares = min(len(lado_40), len(lado_50))
-
+                s40_ord = sub40[~sub40['ID_Linea'].isin(usados)].sort_values('ID_Linea')
+                s50_ord = sub50[~sub50['ID_Linea'].isin(usados)].sort_values('ID_Linea')
+                n_pares = min(len(s40_ord), len(s50_ord))
                 for i in range(n_pares):
-                    fila_40 = lado_40.iloc[i]
-                    fila_50 = lado_50.iloc[i]
-                    id_40 = fila_40['ID_Temp']
-                    id_50 = fila_50['ID_Temp']
+                    id40, id50 = s40_ord.iloc[i]['ID_Linea'], s50_ord.iloc[i]['ID_Linea']
+                    texto_cand = f"{formato_linea(id40)} | {formato_linea(id50)}"
+                    for idx in (id40, id50):
+                        df.loc[df['ID_Linea'] == idx, 'Estado_Conciliacion'] = 'Conciliado - FIFO controlado (última instancia)'
+                        df.loc[df['ID_Linea'] == idx, 'Candidatos_Conciliacion'] = texto_cand
+                        df.loc[df['ID_Linea'] == idx, 'Comentario'] = 'Emparejado por FIFO controlado: misma fecha F, mismo sector, banco e importe.'
+                    ind_fifo_ok.update([id40, id50])
+                    usados.update([id40, id50])
 
-                    texto_par = f"{formato_doc(id_40)} | {formato_doc(id_50)}"
-                    etiqueta_nequi = " [NEQUI: verificar manual]" if (bool(fila_40.get('Es_Nequi', False)) or bool(fila_50.get('Es_Nequi', False))) else ""
-
-                    for idx in (id_40, id_50):
-                        df.at[idx, 'Candidatos_Conciliacion'] = texto_par
-                        df.at[idx, 'Estado_Conciliacion'] = 'Conciliado - Candidato principal (posición FIFO)'
-                        anterior = str(df.at[idx, 'Comentario'])
-                        nuevo_com = f"Candidato principal asignado por posición (FIFO) dentro del grupo.{etiqueta_nequi}"
-                        df.at[idx, 'Comentario'] = nuevo_com if not anterior else anterior + " | " + nuevo_com
-                    ind_fifo_ok.update([id_40, id_50])
-
-                sobrantes_40 = lado_40.iloc[n_pares:]
-                for _, fila in sobrantes_40.iterrows():
-                    idx = fila['ID_Temp']
-                    if bool(fila['Doc_ColB_Repite']):
-                        df.at[idx, 'Estado_Conciliacion'] = 'Sugerencia - Clave 40 sin cruce (Doc. repetido en columna B)'
-                        anterior = str(df.at[idx, 'Comentario'])
-                        nuevo_com = (
-                            "Clave 40 (DZ) sin cruce disponible en su grupo. El Nº de documento "
-                            f"{int(fila[col_doc])} se repite más de una vez en la columna B: "
-                            "requiere descarte manual."
+                # Sobrantes DZ con B repetido y sin pareja -> Regla verde
+                sobrantes40 = s40_ord[~s40_ord['ID_Linea'].isin(usados)]
+                for _, fila in sobrantes40.iterrows():
+                    idl = fila['ID_Linea']
+                    if bool(fila['B_Repite']):
+                        df.loc[df['ID_Linea'] == idl, 'Estado_Conciliacion'] = 'Sugerencia - DZ multiposición sin cruce (verificar)'
+                        df.loc[df['ID_Linea'] == idl, 'Comentario'] = (
+                            f"Documento {int(fila[col_B])} tiene varias posiciones y ésta no encontró pareja "
+                            f"exacta. Requiere descarte manual (Regla verde)."
                         )
-                        df.at[idx, 'Comentario'] = nuevo_com if not anterior else anterior + " | " + nuevo_com
-                        ind_fifo_verde_dz_repetido.add(idx)
-                    else:
-                        anterior = str(df.at[idx, 'Comentario'])
-                        nuevo_com = "Clave 40 (DZ) sin cruce disponible; el documento no se repite en columna B."
-                        df.at[idx, 'Comentario'] = nuevo_com if not anterior else anterior + " | " + nuevo_com
-                        ind_fifo_sin_pareja_neutro.add(idx)
+                        ind_fifo_verde_dz.add(idl)
 
-                sobrantes_50 = lado_50.iloc[n_pares:]
-                for _, fila in sobrantes_50.iterrows():
-                    idx = fila['ID_Temp']
-                    anterior = str(df.at[idx, 'Comentario'])
-                    nuevo_com = "Clave 50 (CB) excedente sin cruce disponible en su grupo. Requiere revisión manual."
-                    df.at[idx, 'Comentario'] = nuevo_com if not anterior else anterior + " | " + nuevo_com
-                    ind_fifo_sin_pareja_neutro.add(idx)
-
+            # =====================================================
+            # 11. CIERRE — Lo que sigue Pendiente
+            # =====================================================
             sin_p = df['Estado_Conciliacion'] == 'Pendiente'
             if usar_ipcb:
-                es_ip = df[col_clase_doc].astype(str).str.upper() == 'IP'
-                df.loc[sin_p & es_ip & (df['Comentario'] == ''), 'Comentario'] = 'Sin coincidencia - PDV'
+                es_ip = df[col_C].astype(str).str.upper() == 'IP'
+                df.loc[sin_p & es_ip & (df['Comentario'] == ''), 'Comentario'] = 'Sin coincidencia - PDV (requiere referencia homologada)'
                 df.loc[sin_p & ~es_ip & (df['Comentario'] == ''), 'Comentario'] = 'Sin coincidencia ni sugerencia que cumpla reglas de seguridad - revisión manual completa'
             else:
                 df.loc[sin_p & (df['Comentario'] == ''), 'Comentario'] = 'Sin coincidencia ni sugerencia que cumpla reglas de seguridad - revisión manual completa'
 
-            # =========================================================
-            # SELECCIÓN DE COLUMNAS VISIBLES (A..O + U)
-            # =========================================================
+            # =====================================================
+            # 12. EXPORTACIÓN
+            # =====================================================
             columnas_visibles = columnas_originales + [
-                'Estado_Conciliacion', 'Comentario', 'Candidatos_Conciliacion', 'Distribuidora'
+                'Estado_Conciliacion', 'Comentario', 'Candidatos_Conciliacion', 'Sector'
             ]
 
-            def vista_simplificada(df_cualquiera):
-                cols_presentes = [c for c in columnas_visibles if c in df_cualquiera.columns]
-                return df_cualquiera[cols_presentes].copy()
+            def vista(df_cualquiera):
+                cols = [c for c in columnas_visibles if c in df_cualquiera.columns]
+                return df_cualquiera[cols].copy()
 
             cuadre_ok = filas_antes == (len(df) + len(filas_descartadas))
-            df_final = df.drop(columns=['ID_Temp', 'Abs_Importe', 'Fecha_Calc'], errors='ignore')
-            for col_f in [c for c in df_final.columns if 'fe.' in c.lower() or 'fecha' in c.lower() or 'fe-' in c.lower()]:
-                df_final[col_f] = pd.to_datetime(df_final[col_f], errors='coerce').dt.strftime('%d/%m/%Y')
+            df_final = df.drop(columns=['ID_Linea', 'Abs_I', 'Fecha_F', 'Fecha_D'], errors='ignore')
+            for c in [c for c in df_final.columns if 'fe.' in c.lower() or 'fecha' in c.lower() or 'fe-' in c.lower()]:
+                df_final[c] = pd.to_datetime(df_final[c], errors='coerce').dt.strftime('%d/%m/%Y')
 
-            # =========================================================
-            # *** REGLA VISUAL ESTRICTA DEL COLOR VERDE ***
-            # =========================================================
-            def resaltar_conciliados(row):
+            def color_fila(row):
                 est = str(row['Estado_Conciliacion']).strip().lower()
-                clave = str(row.get(col_clave, '')).strip()
-                clase = str(row.get(col_clase_doc, '')).strip().upper() if col_clase_doc else ''
-
-                es_conciliado = 'conciliado' in est
-                es_40_dz = (clave == '40' and clase == 'DZ')
-
-                # 1. REGLA ESTRICTA VERDE: Clave 40, Clase DZ, NO CONCILIADO
-                if not es_conciliado and es_40_dz:
-                    return [f'background-color: {COLOR_VERIFICAR}; color: black'] * len(row)
-
-                # 2. Pendientes neutros (Blancos)
                 if est in ('pendiente', '', 'nan'):
-                    return [f'background-color: {COLOR_PENDIENTE}; color: black'] * len(row)
+                    return [f'background-color: {COLOR_BLANCO}; color: black'] * len(row)
+                if 'reclasificación' in est:
+                    return [f'background-color: {COLOR_DURAZNO}; color: black'] * len(row)
+                if 'diferencia de fecha' in est:
+                    return [f'background-color: {COLOR_SALMON}; color: black'] * len(row)
+                if 'diferencia de valor' in est:
+                    return [f'background-color: {COLOR_MORADO}; color: black'] * len(row)
+                if 'sugerencia' in est or 'multiposición' in est or 'multiples' in est or 'sectorización' in est:
+                    return [f'background-color: {COLOR_VERDE}; color: black'] * len(row)
+                if 'conciliado' in est:
+                    return [f'background-color: {COLOR_AZUL}; color: black'] * len(row)
+                return [f'background-color: {COLOR_BLANCO}; color: black'] * len(row)
 
-                # 3. Reclasificación (Lila)
-                if 'reclasificación' in est or 'otro banco' in est:
-                    return [f'background-color: {COLOR_RECLASIFICAR}; color: black'] * len(row)
-
-                # 4. Alertas (Naranja)
-                if 'alerta' in est or 'diferencia' in est or 'fecha' in est or 'periodo' in est:
-                    return [f'background-color: {COLOR_ALERTA}; color: black'] * len(row)
-
-                # 5. Resto de Sugerencias y FIFO (Amarillo - #FFF2CC)
-                if ('sugerencia' in est or ('fifo' in est and 'candidato principal' not in est)
-                        or 'multiples' in est or 'múltiples' in est or 'verificar' in est
-                        or 'soporte' in est or ('fuerte' in est and 'candidato principal' not in est)
-                        or 'sectorización' in est):
-                    return [f'background-color: {COLOR_AMARILLO}; color: black'] * len(row)
-
-                # 6. Conciliados (Azul)
-                if es_conciliado:
-                    return [f'background-color: {COLOR_CONCILIADO}; color: black'] * len(row)
-
-                return [f'background-color: {COLOR_PENDIENTE}; color: black'] * len(row)
-
-            # =========================================================
-            # EXPORTACIÓN BLINDADA
-            # =========================================================
             output = io.BytesIO()
             b_unicos = [b for b in df_final[col_banco].unique() if str(b).strip().lower() not in ('', 'nan')]
-
             orden_cuentas = [
-                "1110056001", "1110056101", "1110056201", "1110056301",
-                "1110056401", "1110056501", "1110056601", "1110056701",
-                "1120055001", "1120055101", "1120055301"
+                "1110056001", "1110056101", "1110056201", "1110056301", "1110056401",
+                "1110056501", "1110056601", "1110056701", "1120055001", "1120055101", "1120055301"
             ]
             nombres_ordenados = [mapeo_cuentas_banco.get(c, f"CUENTA {c} (sin mapear)") for c in orden_cuentas]
 
-            def get_bank_order(banco_str):
-                banco_str = str(banco_str).strip()
-                if banco_str in nombres_ordenados:
-                    return nombres_ordenados.index(banco_str)
+            def orden_banco(bs):
+                bs = str(bs).strip()
+                if bs in nombres_ordenados: return nombres_ordenados.index(bs)
                 for i, acc in enumerate(orden_cuentas):
-                    if acc in banco_str:
-                        return i
+                    if acc in bs: return i
                 return 999
+            b_unicos = sorted(b_unicos, key=orden_banco)
 
-            b_unicos = sorted(b_unicos, key=get_bank_order)
-
-            nombres_pestanas_usados = set()
-
-            def nombre_pestana_unico(nombre_base):
-                nombre = re.sub(r'[\\/*?:\[\]]', '-', str(nombre_base)[:31])
-                if not nombre.strip() or nombre.lower() == 'nan':
-                    nombre = "Sin_Banco"
-                original = nombre
-                contador = 1
-                while nombre in nombres_pestanas_usados:
-                    sufijo = f"_{contador}"
-                    nombre = original[: 31 - len(sufijo)] + sufijo
-                    contador += 1
-                nombres_pestanas_usados.add(nombre)
+            pestanas_usadas = set()
+            def nombre_pestana(base):
+                nombre = re.sub(r'[\\/*?:\[\]]', '-', str(base)[:31])
+                if not nombre.strip() or nombre.lower() == 'nan': nombre = "Sin_Banco"
+                original, cont = nombre, 1
+                while nombre in pestanas_usadas:
+                    suf = f"_{cont}"
+                    nombre = original[:31-len(suf)] + suf
+                    cont += 1
+                pestanas_usadas.add(nombre)
                 return nombre
 
-            advertencias_export = []
-
-            def escribir_hoja_segura(writer, df_hoja, nombre_hoja, con_estilo=True):
-                nombre_final = nombre_pestana_unico(nombre_hoja)
+            advertencias = []
+            def hoja_segura(writer, df_hoja, nombre, estilo=True):
+                nf = nombre_pestana(nombre)
                 try:
-                    if con_estilo and not df_hoja.empty:
-                        df_hoja.style.apply(
-                            lambda row: resaltar_conciliados(df_hoja.loc[row.name]), axis=1
-                        ).to_excel(writer, index=False, sheet_name=nombre_final)
+                    if estilo and not df_hoja.empty:
+                        df_hoja.style.apply(lambda row: color_fila(df_hoja.loc[row.name]), axis=1).to_excel(writer, index=False, sheet_name=nf)
                     else:
-                        df_hoja.to_excel(writer, index=False, sheet_name=nombre_final)
-                except Exception as e_estilo:
+                        df_hoja.to_excel(writer, index=False, sheet_name=nf)
+                except Exception as e1:
                     try:
-                        df_hoja.to_excel(writer, index=False, sheet_name=nombre_final)
-                        advertencias_export.append(
-                            f"Hoja '{nombre_final}': se escribió sin colores por un error de formato ({e_estilo})."
-                        )
-                    except Exception as e_fatal:
-                        advertencias_export.append(
-                            f"Hoja '{nombre_final}': no se pudo escribir ({e_fatal})."
-                        )
+                        df_hoja.to_excel(writer, index=False, sheet_name=nf)
+                        advertencias.append(f"Hoja '{nf}': sin colores por error de formato ({e1}).")
+                    except Exception as e2:
+                        advertencias.append(f"Hoja '{nf}': no se pudo escribir ({e2}).")
 
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
-
                 total_filas = len(df_final)
-                total_conciliadas = int(df_final['Estado_Conciliacion'].str.contains('Conciliado', na=False).sum())
-                total_pendientes = int((df_final['Estado_Conciliacion'] == 'Pendiente').sum())
-                total_alertas = int(df_final['Estado_Conciliacion'].str.contains('Alerta|Diferencia', case=False, na=False).sum())
-                total_reclasificar = int(df_final['Estado_Conciliacion'].str.contains('Reclasificación', case=False, na=False).sum())
-                total_con_candidatos = int((df_final['Candidatos_Conciliacion'] != '').sum())
-                
-                # Contador de verdes estricto
-                mask_verde = (~df_final['Estado_Conciliacion'].str.contains('Conciliado', case=False, na=False)) & (df_final[col_clave].astype(str).str.strip() == '40')
-                if col_clase_doc:
-                    mask_verde = mask_verde & (df_final[col_clase_doc].astype(str).str.strip().str.upper() == 'DZ')
-                total_verde = int(mask_verde.sum())
+                total_azul = int(df_final['Estado_Conciliacion'].str.contains('Conciliado', na=False).sum())
+                total_verde = int(df_final['Estado_Conciliacion'].str.contains('Sugerencia', na=False).sum())
+                total_salmon = int(df_final['Estado_Conciliacion'].str.contains('Diferencia de fecha', na=False).sum())
+                total_morado = int(df_final['Estado_Conciliacion'].str.contains('Diferencia de valor', na=False).sum())
+                total_durazno = int(df_final['Estado_Conciliacion'].str.contains('Reclasificación', na=False).sum())
+                total_pendiente = int((df_final['Estado_Conciliacion'] == 'Pendiente').sum())
 
-                total_sugerencias = int(df_final['Estado_Conciliacion'].str.contains('Sugerencia|FIFO|Verificar|Multiples|Múltiples|Soporte', case=False, na=False).sum())
-
-                resumen_df = pd.DataFrame({
+                resumen = pd.DataFrame({
                     "Métrica": [
-                        "Fecha de procesamiento",
-                        "Total filas procesadas",
-                        "Conciliadas / Candidato principal (azul)",
-                        "Cruce múltiple IP/CB EXACTO",
-                        "Sugerencia por Sectorización",
-                        "Clave 40 Clase DZ sin conciliar (Verde)",
-                        "Otras Sugerencias y Verificaciones (Amarillo)",
-                        "Alertas / Diferencias (naranja)",
-                        "Reclasificar banco (lila)",
-                        "Pendientes (blanco)",
-                        "Filas con Candidatos_Conciliacion asignado",
-                        "Filas excluidas (sin doc/clave)",
-                        "Filas con posiciones múltiples",
+                        "Fecha de procesamiento", "Total filas procesadas",
+                        "Azul - Conciliado (todas las reglas)",
+                        "Verde - Sugerencias (sectorización/Nequi/DZ múltiple/IP%)",
+                        "Salmón - Diferencia de fecha (Regla 7)",
+                        "Morado - Diferencia de valor máx $500 (Regla morado)",
+                        "Durazno - Reclasificación de banco (Regla 6)",
+                        "Blanco - Pendiente sin evidencia",
+                        "IP conciliado exacto (Regla 3)", "IP con % de diferencia",
+                        "FIFO controlado (última instancia)", "DZ verde sin cruce",
+                        "Filas excluidas (sin doc/clave)", "Filas con Nº doc. repetido",
                     ],
                     "Valor": [
-                        datetime.now().strftime('%d/%m/%Y %H:%M'),
-                        total_filas,
-                        total_conciliadas,
-                        len(ind_1c_ipcb),
-                        len(ind_sector_redondos),
-                        total_verde,
-                        total_sugerencias,
-                        total_alertas,
-                        total_reclasificar,
-                        total_pendientes,
-                        total_con_candidatos,
-                        filas_excluidas,
-                        int(df_final['Tiene_Posiciones_Repetidas'].sum()),
+                        datetime.now().strftime('%d/%m/%Y %H:%M'), total_filas,
+                        total_azul, total_verde, total_salmon, total_morado, total_durazno, total_pendiente,
+                        len(ind_ip_exacto), len(ind_ip_tolerancia),
+                        len(ind_fifo_ok), len(ind_fifo_verde_dz),
+                        filas_excluidas, int(df_final['B_Repite'].sum()) if 'B_Repite' in df_final.columns else 0,
                     ]
                 })
-                resumen_df.to_excel(writer, index=False, sheet_name='RESUMEN')
-                nombres_pestanas_usados.add('RESUMEN')
+                resumen.to_excel(writer, index=False, sheet_name='RESUMEN')
+                pestanas_usadas.add('RESUMEN')
 
                 df_nov = df_final[~df_final['Estado_Conciliacion'].str.startswith('Conciliado', na=False)].copy()
-                df_nov = df_nov[df_nov[col_clave] == '40']
+                df_nov = df_nov[df_nov[col_G] == '40']
                 if not df_nov.empty:
-                    df_nov = df_nov.sort_values(by=['Estado_Conciliacion', col_importe])
-                    escribir_hoja_segura(writer, vista_simplificada(df_nov), 'NOVEDADES_Y_PENDIENTES_40', con_estilo=True)
+                    df_nov = df_nov.sort_values(by=['Estado_Conciliacion', col_I])
+                    hoja_segura(writer, vista(df_nov), 'NOVEDADES_Y_PENDIENTES_40', estilo=True)
                 else:
-                    escribir_hoja_segura(writer, pd.DataFrame(columns=columnas_visibles), 'NOVEDADES_Y_PENDIENTES_40', con_estilo=False)
+                    hoja_segura(writer, pd.DataFrame(columns=columnas_visibles), 'NOVEDADES_Y_PENDIENTES_40', estilo=False)
 
-                df_multi = df_final[df_final['Tiene_Posiciones_Repetidas'] == True].copy()
+                df_multi = df_final[df_final['B_Repite'] == True].copy() if 'B_Repite' in df_final.columns else pd.DataFrame()
                 if not df_multi.empty:
-                    df_multi = df_multi.sort_values(by=[col_banco, col_importe, col_fecha, col_referencia, col_doc])
-                    escribir_hoja_segura(writer, vista_simplificada(df_multi), 'REVISAR_POSICIONES_MULTIPLES', con_estilo=True)
+                    df_multi = df_multi.sort_values(by=[col_banco, col_I, col_F, col_H, col_B])
+                    hoja_segura(writer, vista(df_multi), 'REVISAR_POSICIONES_MULTIPLES', estilo=True)
 
                 for banco in b_unicos:
-                    df_b = df_final[df_final[col_banco] == banco].copy().sort_values(by=col_importe, ascending=True)
-                    if df_b.empty:
-                        continue
-                    escribir_hoja_segura(writer, vista_simplificada(df_b), str(banco), con_estilo=True)
+                    df_b = df_final[df_final[col_banco] == banco].copy().sort_values(by=col_I, ascending=True)
+                    if df_b.empty: continue
+                    hoja_segura(writer, vista(df_b), str(banco), estilo=True)
 
                 if not filas_descartadas.empty:
-                    escribir_hoja_segura(writer, vista_simplificada(filas_descartadas), 'DESCARTADAS_SIN_DOC_O_CT', con_estilo=False)
+                    hoja_segura(writer, vista(filas_descartadas), 'DESCARTADAS_SIN_DOC_O_CT', estilo=False)
 
-            # =========================================================
-            # INTERFAZ
-            # =========================================================
-            st.success("¡Conciliación Integral terminada! 4 bugs críticos superados (Velocidad, Div-Cero, drop_duplicates, Estado Naranja).")
+            # =====================================================
+            # 13. INTERFAZ
+            # =====================================================
+            st.success("¡Conciliación completada con el motor de reglas CLM v25!")
             if not cuadre_ok:
                 st.warning("⚠️ Revisa la pestaña DESCARTADAS, el total de filas no coincide.")
-
-            if advertencias_export:
-                for adv in advertencias_export:
-                    st.warning(f"⚠️ {adv}")
+            for adv in advertencias:
+                st.warning(f"⚠️ {adv}")
 
             st.markdown(f"""
-**Leyenda de colores (6 categorías):**
-- <span style="background-color:{COLOR_CONCILIADO}; padding:2px 8px;">Azul: Conciliado / Candidato principal</span>
-- <span style="background-color:{COLOR_VERIFICAR}; padding:2px 8px;">Verde: Clave 40 Clase DZ sin conciliar</span>
-- <span style="background-color:{COLOR_AMARILLO}; padding:2px 8px;">Amarillo: Resto de Sugerencias y alertas a verificar</span>
-- <span style="background-color:{COLOR_ALERTA}; padding:2px 8px;">Naranja: Alerta de fecha o diferencia de valor</span>
-- <span style="background-color:{COLOR_RECLASIFICAR}; padding:2px 8px;">Lila: Reclasificación de banco</span>
-- <span style="background-color:{COLOR_PENDIENTE}; padding:2px 8px; border:1px solid #ccc;">Blanco: Pendiente general</span>
+**Leyenda de colores:**
+- <span style="background-color:{COLOR_AZUL}; padding:2px 8px;">Azul: Conciliado — cumple todas las reglas (A=H, misma F, mismo banco, importe exacto, sector coherente)</span>
+- <span style="background-color:{COLOR_VERDE}; padding:2px 8px;">Verde: Sugerencia — sectorización, DZ multiposición, Nequi ambiguo, IP con % de diferencia</span>
+- <span style="background-color:{COLOR_SALMON}; padding:2px 8px;">Salmón: Diferencia de fecha F (hasta {TOPE_DIAS_ALERTA} días)</span>
+- <span style="background-color:{COLOR_MORADO}; padding:2px 8px;">Morado: Diferencia de valor (máx ${tol_valor_purpura:.0f})</span>
+- <span style="background-color:{COLOR_DURAZNO}; padding:2px 8px;">Durazno: Reclasificación de banco</span>
+- <span style="background-color:{COLOR_BLANCO}; padding:2px 8px; border:1px solid #ccc;">Blanco: Pendiente sin evidencia suficiente</span>
+
+**Reglas clave aplicadas:**
+- La fecha D (periodo) es SOLO informativa. La fecha F es la ÚNICA que valida conciliación.
+- Un documento B con G=40 se empareja con un único documento B con G=50 (Regla 1).
+- Los IP solo concilian por referencia homologada de base de datos (Regla 3), nunca por fecha+importe simple.
+- Los "Nequi" (Regla 3, excepción) requieren candidato único, mismo banco/fecha, sector coherente e importe exacto o diferencia ≤ ${tol_valor_purpura:.0f}.
+- Documentos DZ repetidos (Regla 4) muestran hasta 5 candidatos ordenados en la columna O.
+- El FIFO controlado es el ÚLTIMO recurso: solo actúa sobre filas 100% vírgenes (sin estado, comentario ni candidatos previos), evitando el bug de versiones anteriores que sobrescribía bloqueos de seguridad.
 """, unsafe_allow_html=True)
 
-            c1_, c2_, c3_, c4_, c5_ = st.columns(5)
-            c1_.metric("Conciliadas (Azul)", total_conciliadas)
-            c2_.metric("Verde (DZ 40 No Conciliado)", total_verde)
-            c3_.metric("Alertas/Reclasificar", total_alertas + total_reclasificar)
-            c4_.metric("Sugerencias (Amarillo)", total_sugerencias)
-            c5_.metric("Pendientes (Blanco)", total_pendientes)
+            c1, c2, c3, c4, c5, c6 = st.columns(6)
+            c1.metric("Azul", total_azul)
+            c2.metric("Verde", total_verde)
+            c3.metric("Salmón", total_salmon)
+            c4.metric("Morado", total_morado)
+            c5.metric("Durazno", total_durazno)
+            c6.metric("Pendiente", total_pendiente)
 
             if filas_excluidas > 0:
                 st.warning(f"⚠️ Se excluyeron {filas_excluidas} filas vacías/totales.")
 
-            st.download_button(label="📥 Descargar Excel con Resultados", data=output.getvalue(), file_name="Conciliacion completa y depurada V26.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            st.download_button(
+                label="📥 Descargar Excel con Resultados",
+                data=output.getvalue(),
+                file_name="Conciliacion_CLM_v25.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
 
     except Exception as e:
         st.error(f"Error técnico detectado: {e}")
