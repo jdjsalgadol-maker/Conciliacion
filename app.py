@@ -517,6 +517,87 @@ if archivo_subido is not None:
                     escribir_comentario(idl, "PDV (IP): requiere referencia homologada de base de datos para conciliar. Sin coincidencia por ahora.", append=False)
 
             # =====================================================
+            # 5B. REGLA 8 — NEQUI POR TOTALES Y FIFO (sección 11 de la guía)
+            #     Se ejecuta DESPUÉS de IP y ANTES de Regla 1, tal como exige
+            #     el orden de procesamiento (sección 16). Es una excepción
+            #     controlada: NO exige A=H, sector ni candidato único por
+            #     línea -- exige que la CANTIDAD de líneas y el TOTAL de
+            #     importe coincidan EXACTO entre todos los DZ "NEQUI" y
+            #     todos los CB del mismo banco+fecha F. Solo en ese caso se
+            #     empareja por FIFO (orden de Nº documento) y se pinta azul.
+            #     Si la cantidad o el total no cuadran exacto, NO se fuerza
+            #     nada: el grupo queda como sugerencia con el detalle de la
+            #     diferencia, y las líneas siguen disponibles para Regla 1 /
+            #     sectorización más adelante (por si alguna sí tiene A=H).
+            # =====================================================
+            ind_nequi8_azul = set()
+            ind_nequi8_sugerencia = set()
+
+            df_nequi_dz = df[(df[col_G] == '40') & (df['Es_Nequi'] == True) & (~df['ID_Linea'].isin(usados))]
+            df_cb_disponible = df[(df[col_G] == '50') & (~df['ID_Linea'].isin(usados))]
+            if usar_ipcb:
+                df_cb_disponible = df_cb_disponible[df_cb_disponible[col_C].astype(str).str.upper() != 'IP']
+
+            if not df_nequi_dz.empty and not df_cb_disponible.empty:
+                for (banco_g, fecha_g), grupo_dz in df_nequi_dz.groupby([col_banco, 'Fecha_F']):
+                    grupo_dz = grupo_dz[~grupo_dz['ID_Linea'].isin(usados)]
+                    if grupo_dz.empty:
+                        continue
+                    grupo_cb = df_cb_disponible[
+                        (df_cb_disponible[col_banco] == banco_g) &
+                        (df_cb_disponible['Fecha_F'] == fecha_g) &
+                        (~df_cb_disponible['ID_Linea'].isin(usados))
+                    ]
+                    if grupo_cb.empty:
+                        continue
+
+                    n_dz, n_cb = len(grupo_dz), len(grupo_cb)
+                    total_dz = round(grupo_dz['Abs_I'].sum(), 2)
+                    total_cb = round(grupo_cb['Abs_I'].sum(), 2)
+
+                    dz_ord = grupo_dz.sort_values(col_B).reset_index(drop=True)
+                    cb_ord = grupo_cb.sort_values(col_B).reset_index(drop=True)
+                    n_parejas = min(n_dz, n_cb)
+
+                    if n_dz == n_cb and total_dz == total_cb:
+                        # Caso feliz (sección 11.2): cantidad y total exactos -> AZUL por FIFO
+                        texto_grupo = f"total DZ=${total_dz:,.0f}; total CB=${total_cb:,.0f}; cruce FIFO por B ({n_dz} lineas)."
+                        for i in range(n_parejas):
+                            id40 = dz_ord.iloc[i]['ID_Linea']
+                            id50 = cb_ord.iloc[i]['ID_Linea']
+                            texto_cand = f"{formato_linea(id40)} | {formato_linea(id50)}"
+                            for idx in (id40, id50):
+                                df.loc[df['ID_Linea'] == idx, 'Estado_Conciliacion'] = 'Conciliado - Regla 8 Nequi (total y FIFO)'
+                                df.loc[df['ID_Linea'] == idx, 'Candidatos_Conciliacion'] = texto_cand
+                                df.loc[df['ID_Linea'] == idx, 'Comentario'] = f"Regla 8 Nequi: {texto_grupo}"
+                            ind_nequi8_azul.update([id40, id50])
+                        usados.update(dz_ord['ID_Linea'].tolist() + cb_ord['ID_Linea'].tolist())
+                    else:
+                        # Cantidad o total NO cuadran exacto (secciones 11.3/11.4):
+                        # no se fuerza azul. Se deja como sugerencia con el detalle,
+                        # y las líneas NO se marcan como 'usadas' para que sigan
+                        # disponibles en Regla 1 / sectorización más adelante.
+                        diff_total = abs(total_dz - total_cb)
+                        motivo = (
+                            f"cantidad DZ={n_dz} vs CB={n_cb}" if n_dz != n_cb
+                            else f"totales distintos (DZ=${total_dz:,.0f} vs CB=${total_cb:,.0f}, dif=${diff_total:,.0f})"
+                        )
+                        docs_dz = resumen_docs(dz_ord)
+                        docs_cb = resumen_docs(cb_ord)
+                        texto_cand = f"Grupo NEQUI {banco_g} {fecha_g}: DZ candidatos: {docs_dz} || CB candidatos: {docs_cb}"
+                        comentario = (
+                            f"Regla 8 Nequi: grupo NO cuadra exacto ({motivo}). "
+                            f"No se concilia automático; requiere revisión manual del grupo completo."
+                        )
+                        for _, fila in pd.concat([dz_ord, cb_ord]).iterrows():
+                            idl = fila['ID_Linea']
+                            escribir_estado([idl], 'Sugerencia - Regla 8 Nequi (revisar total de grupo)', forzar=False)
+                            if df.loc[df['ID_Linea'] == idl, 'Candidatos_Conciliacion'].iloc[0] == '':
+                                escribir_candidatos(idl, texto_cand)
+                            escribir_comentario(idl, comentario, append=False)
+                            ind_nequi8_sugerencia.add(idl)
+
+            # =====================================================
             # 6. REGLA 1 — A debe coincidir con H (exacto), documento
             #    único por lado, F exacta, banco y sector coherentes.
             #    Se procesa por LINEA (no por documento agregado), lo
@@ -858,10 +939,19 @@ if archivo_subido is not None:
                     return [f'background-color: {COLOR_SALMON}; color: black'] * len(row)
                 if 'diferencia de valor' in est:
                     return [f'background-color: {COLOR_MORADO}; color: black'] * len(row)
-                if 'sugerencia' in est or 'multiposición' in est or 'multiples' in est or 'sectorización' in est:
+                # REGLA VERDE ESTRICTA (sección 12/13 de la guía): el verde
+                # es EXCLUSIVO para C=DZ con B repetido y al menos una
+                # posición sin cruce -- nunca para "sugerencia" en general
+                # (sectorización aislada, Nequi ambiguo, Regla 8 con
+                # totales distintos, IP, etc. NO son verde, quedan blanco).
+                if 'dz multiposición' in est or 'dz posiciones múltiples' in est:
                     return [f'background-color: {COLOR_VERDE}; color: black'] * len(row)
                 if 'conciliado' in est:
                     return [f'background-color: {COLOR_AZUL}; color: black'] * len(row)
+                # Cualquier otra "Sugerencia" (sectorización, Nequi ambiguo,
+                # Regla 8 sin cuadrar, etc.) no tiene color propio en la
+                # paleta oficial: queda blanco/pendiente, pero con su
+                # Comentario y Candidatos ya llenos para revisión manual.
                 return [f'background-color: {COLOR_BLANCO}; color: black'] * len(row)
 
             output = io.BytesIO()
@@ -910,7 +1000,9 @@ if archivo_subido is not None:
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 total_filas = len(df_final)
                 total_azul = int(df_final['Estado_Conciliacion'].str.contains('Conciliado', na=False).sum())
-                total_verde = int(df_final['Estado_Conciliacion'].str.contains('Sugerencia', na=False).sum())
+                total_verde = int(
+                    df_final['Estado_Conciliacion'].str.contains('DZ multiposición|DZ posiciones múltiples', na=False, regex=True).sum()
+                )
                 total_salmon = int(df_final['Estado_Conciliacion'].str.contains('Diferencia de fecha', na=False).sum())
                 total_morado = int(df_final['Estado_Conciliacion'].str.contains('Diferencia de valor', na=False).sum())
                 total_durazno = int(df_final['Estado_Conciliacion'].str.contains('Reclasificación', na=False).sum())
@@ -920,12 +1012,14 @@ if archivo_subido is not None:
                     "Métrica": [
                         "Fecha de procesamiento", "Total filas procesadas",
                         "Azul - Conciliado (todas las reglas)",
-                        "Verde - Sugerencias (sectorización/Nequi/DZ múltiple/IP%)",
+                        "Verde - Regla verde estricta (DZ B repetido, posición fallida)",
                         "Salmón - Diferencia de fecha (Regla 7)",
                         "Morado - Diferencia de valor máx $500 (Regla morado)",
                         "Durazno - Reclasificación de banco (Regla 6)",
                         "Blanco - Pendiente sin evidencia",
                         "IP conciliado exacto (Regla 3)", "IP con % de diferencia",
+                        "Regla 8 Nequi - Azul (total y FIFO exacto)",
+                        "Regla 8 Nequi - Sugerencia (grupo no cuadra exacto)",
                         "FIFO controlado (última instancia)", "DZ verde sin cruce",
                         "Filas excluidas (sin doc/clave)", "Filas con Nº doc. repetido",
                     ],
@@ -933,6 +1027,7 @@ if archivo_subido is not None:
                         datetime.now().strftime('%d/%m/%Y %H:%M'), total_filas,
                         total_azul, total_verde, total_salmon, total_morado, total_durazno, total_pendiente,
                         len(ind_ip_exacto), len(ind_ip_tolerancia),
+                        len(ind_nequi8_azul), len(ind_nequi8_sugerencia),
                         len(ind_fifo_ok), len(ind_fifo_verde_dz),
                         filas_excluidas, int(df_final['B_Repite'].sum()) if 'B_Repite' in df_final.columns else 0,
                     ]
