@@ -58,6 +58,7 @@ COLOR_SALMON = "#F5B7A1"    # Diferencia de fecha (hasta 4 días) - Regla 7
 COLOR_MORADO = "#C39BD3"    # Diferencia de valor máx $500 - Regla morado
 COLOR_DURAZNO = "#FAD7A0"   # Reclasificación de banco - Regla 6
 COLOR_BLANCO = "#FFFFFF"    # Pendiente
+COLOR_GRIS = "#D0CECE"      # NUEVO: Cruces múltiples de documento IP (Regla 3)
 
 archivo_subido = st.file_uploader("Selecciona el archivo de Excel o CSV", type=['xlsx', 'csv'])
 
@@ -226,7 +227,7 @@ if archivo_subido is not None:
                 if h_val in mapeo_referencias_dist: return mapeo_referencias_dist[h_val]
 
                 t_full = f"{texto_k} {texto_nov} {texto_a} {h_val}".upper()
-                nums = re.findall(r'\b\d{4}\b', t_full)
+                nums = re.findall(r'\d{4}', t_full)
                 for n in nums:
                     num = int(n)
                     if 2000 <= num <= 2999: return 'Dist Buga'
@@ -240,10 +241,10 @@ if archivo_subido is not None:
 
             def obtener_ref_homologada(row):
                 texto = f"{row.get(col_H,'')} {row.get(col_A,'')} {row.get(col_K,'') if col_K else ''} {row.get(col_novedad,'') if col_novedad else ''}".upper()
-                n8 = re.findall(r'\b\d{8}\b', texto)
+                n8 = re.findall(r'\d{8}', texto)
                 for n in n8:
                     if n in mapeo_datafono_ref: return mapeo_datafono_ref[n]
-                n4 = re.findall(r'\b\d{4}\b', texto)
+                n4 = re.findall(r'\d{4}', texto)
                 for n in n4:
                     if n in mapeo_datafono_ref.values(): return n
                 return None
@@ -947,6 +948,10 @@ if archivo_subido is not None:
             def color_fila(row):
                 est = str(row['Estado_Conciliacion']).strip().lower()
                 if est in ('pendiente', '', 'nan'): return [f'background-color: {COLOR_BLANCO}; color: black'] * len(row)
+                
+                # NUEVO: Capturar cruces múltiples IP (Regla 3) antes que las demás reglas
+                if 'cruce múltiple ip/cb' in est: return [f'background-color: {COLOR_GRIS}; color: black'] * len(row)
+                
                 if 'reclasificación' in est: return [f'background-color: {COLOR_DURAZNO}; color: black'] * len(row)
                 
                 # Integracion v33 de estados
@@ -979,7 +984,7 @@ if archivo_subido is not None:
 
             pestanas_usadas = set()
             def nombre_pestana(base):
-                nombre = re.sub(r'[\\/*?:\[\]]', '-', str(base)[:31])
+                nombre = re.sub(r'[\/*?:\[\]]', '-', str(base)[:31])
                 if not nombre.strip() or nombre.lower() == 'nan': nombre = "Sin_Banco"
                 original, cont = nombre, 1
                 while nombre in pestanas_usadas:
@@ -1082,6 +1087,7 @@ if archivo_subido is not None:
 - <span style="background-color:{COLOR_SALMON}; padding:2px 8px;">Salmón: Diferencia de fecha F (hasta {TOPE_DIAS_ALERTA} días)</span>
 - <span style="background-color:{COLOR_MORADO}; padding:2px 8px;">Morado: Diferencia de valor (máx ${tol_valor_purpura:.0f})</span>
 - <span style="background-color:{COLOR_DURAZNO}; padding:2px 8px;">Durazno: Reclasificación de banco</span>
+- <span style="background-color:{COLOR_GRIS}; padding:2px 8px;">Gris: Cruces múltiples IP/CB (Regla 3)</span>
 - <span style="background-color:{COLOR_BLANCO}; padding:2px 8px; border:1px solid #ccc;">Blanco: Pendientes / Bloqueos por cruces fuera del límite de días</span>
 
 **Reglas clave aplicadas:**
