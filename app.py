@@ -512,6 +512,59 @@ if archivo_subido is not None:
                 for idl in ip_sin_resolver['ID_Linea']:
                     escribir_comentario(idl, "PDV (IP): requiere referencia homologada de base de datos o coincidencia por Zona.", append=False)
 
+            # ================================================================
+            # ALERTA DE RECLASIFICACIÓN DE BANCO EXCLUSIVA IP (Hasta 4 días)
+            # ================================================================
+            if usar_ipcb:
+                ip40_recl = df[(df[col_C].astype(str).str.upper() == 'IP') & (df[col_G] == '40') & (~df['ID_Linea'].isin(usados))].copy()
+                cb50_recl = df[(df[col_C].astype(str).str.upper() == 'CB') & (df[col_G] == '50') & (~df['ID_Linea'].isin(usados))].copy()
+
+                for id_ip, fila_ip in ip40_recl.iterrows():
+                    if id_ip in usados: continue
+
+                    # Buscar CBs en DISTINTO banco, mismo importe
+                    candidatos = cb50_recl[
+                        (cb50_recl[col_banco] != fila_ip[col_banco]) &
+                        (cb50_recl['Abs_I'] == fila_ip['Abs_I']) &
+                        (~cb50_recl['ID_Linea'].isin(usados))
+                    ].copy()
+
+                    if candidatos.empty: continue
+
+                    # Aplicar tolerancia de hasta 4 días
+                    candidatos['_dif_dias'] = (candidatos['Fecha_F'] - fila_ip['Fecha_F']).dt.days.abs().fillna(999)
+                    candidatos = candidatos[candidatos['_dif_dias'] <= TOPE_DIAS_ALERTA]
+
+                    if candidatos.empty: continue
+
+                    # Preferir candidatos de la misma zona si la zona no es 'Sin clasificar'
+                    if fila_ip['Sector'] != 'Sin clasificar':
+                        cand_zona = candidatos[candidatos['Sector'] == fila_ip['Sector']]
+                        if not cand_zona.empty:
+                            candidatos = cand_zona
+                    
+                    if len(candidatos) == 1:
+                        id_cb = candidatos.iloc[0]['ID_Linea']
+                        banco_ip = str(fila_ip[col_banco]).strip()
+                        banco_cb = str(candidatos.iloc[0][col_banco]).strip()
+                        dif_d = int(candidatos.iloc[0]['_dif_dias'])
+                        
+                        texto_cand = f"{formato_linea(id_ip)} | {formato_linea(id_cb)}"
+                        comentario = f"Reclasificación de banco (Exclusiva IP): Registrado en '{banco_ip}', esperado en '{banco_cb}'. Diferencia F={dif_d} día(s). Mismo importe."
+                        
+                        for idx in [id_ip, id_cb]:
+                            df.loc[df['ID_Linea'] == idx, 'Estado_Conciliacion'] = 'Reclasificación de banco'
+                            df.loc[df['ID_Linea'] == idx, 'Candidatos_Conciliacion'] = texto_cand
+                            df.loc[df['ID_Linea'] == idx, 'Comentario'] = comentario
+                        usados.update([id_ip, id_cb])
+                        parejas_registradas.append((id_ip, id_cb))
+                    elif len(candidatos) > 1:
+                        docs_cand = resumen_docs(candidatos)
+                        df.loc[df['ID_Linea'] == id_ip, 'Estado_Conciliacion'] = 'Sugerencia - Reclasificación con múltiples candidatos'
+                        df.loc[df['ID_Linea'] == id_ip, 'Candidatos_Conciliacion'] = f"{formato_linea(id_ip)} | Candidatos posibles: {docs_cand}"
+                        df.loc[df['ID_Linea'] == id_ip, 'Comentario'] = f"Alerta de reclasificación IP: varios candidatos en otros bancos dentro de {TOPE_DIAS_ALERTA} días."
+
+
             # =====================================================
             # Regla 8: NEQUI POR TOTALES Y FIFO
             # =====================================================
