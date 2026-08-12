@@ -17,13 +17,13 @@ import re
 from datetime import datetime
 
 st.set_page_config(page_title="Conciliación Integral CLM", layout="wide")
-st.markdown("""
+st.markdown('''
     <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
     </style>
-""", unsafe_allow_html=True)
+''', unsafe_allow_html=True)
 
 st.title("🏦 Conciliación Automatizada — Motor CLM v25 🤖")
 st.write("Sube tu archivo consolidado.")
@@ -227,7 +227,7 @@ if archivo_subido is not None:
                 if h_val in mapeo_referencias_dist: return mapeo_referencias_dist[h_val]
 
                 t_full = f"{texto_k} {texto_nov} {texto_a} {h_val}".upper()
-                nums = re.findall(r'\d{4}', t_full)
+                nums = re.findall(r'\b\d{4}\b', t_full)
                 for n in nums:
                     num = int(n)
                     if 2000 <= num <= 2999: return 'Dist Buga'
@@ -241,10 +241,10 @@ if archivo_subido is not None:
 
             def obtener_ref_homologada(row):
                 texto = f"{row.get(col_H,'')} {row.get(col_A,'')} {row.get(col_K,'') if col_K else ''} {row.get(col_novedad,'') if col_novedad else ''}".upper()
-                n8 = re.findall(r'\d{8}', texto)
+                n8 = re.findall(r'\b\d{8}\b', texto)
                 for n in n8:
                     if n in mapeo_datafono_ref: return mapeo_datafono_ref[n]
-                n4 = re.findall(r'\d{4}', texto)
+                n4 = re.findall(r'\b\d{4}\b', texto)
                 for n in n4:
                     if n in mapeo_datafono_ref.values(): return n
                 return None
@@ -344,12 +344,9 @@ if archivo_subido is not None:
                 return True
 
             def gate_seguridad(id40, id50, exigir_importe_exacto=True, tolerancia_valor=None):
-                """
-                Verifica reglas transversales.
-                - Si difiere de fecha > TOPE_DIAS_ALERTA -> BLOQUEADO ESTRICTO.
-                """
-                ra = df.loc[df['ID_Linea'] == id40].iloc[0]
-                rb = df.loc[df['ID_Linea'] == id50].iloc[0]
+                res = df.loc[df['ID_Linea'].isin([id40, id50])]
+                ra = res[res['ID_Linea'] == id40].iloc[0]
+                rb = res[res['ID_Linea'] == id50].iloc[0]
 
                 resultado = {
                     'ok': False, 'motivo': '', 'dif_dias': None,
@@ -449,10 +446,6 @@ if archivo_subido is not None:
                 df_cb = df[(df[col_C].astype(str).str.upper() == 'CB') & (df[col_G] == '50') & df['Ref_H_Homologada'].notna()]
 
                 if not df_ip.empty and not df_cb.empty:
-                    # FIX: se agrega col_F (Fecha valor) a la agrupación. Antes se
-                    # sumaban TODOS los IP y CB de una referencia homologada sin
-                    # importar la fecha, lo que podía mezclar operaciones de días
-                    # distintos. La Fecha valor debe ser SIEMPRE una restricción.
                     grp_ip = df_ip.groupby([col_banco, col_F, 'Ref_H_Homologada'])['Abs_I'].sum().reset_index(name='S_IP')
                     grp_cb = df_cb.groupby([col_banco, col_F, 'Ref_H_Homologada'])['Abs_I'].sum().reset_index(name='S_CB')
                     m = pd.merge(grp_cb, grp_ip, on=[col_banco, col_F, 'Ref_H_Homologada'])
@@ -984,7 +977,7 @@ if archivo_subido is not None:
 
             pestanas_usadas = set()
             def nombre_pestana(base):
-                nombre = re.sub(r'[\/*?:\[\]]', '-', str(base)[:31])
+                nombre = re.sub(r'[\\/*?:\[\]]', '-', str(base)[:31])
                 if not nombre.strip() or nombre.lower() == 'nan': nombre = "Sin_Banco"
                 original, cont = nombre, 1
                 while nombre in pestanas_usadas:
@@ -1080,7 +1073,7 @@ if archivo_subido is not None:
             for adv in advertencias:
                 st.warning(f"⚠️ {adv}")
 
-            st.markdown(f"""
+            st.markdown(f'''
 **Leyenda de colores:**
 - <span style="background-color:{COLOR_AZUL}; padding:2px 8px;">Azul: Conciliado — cumple todas las reglas (A=H, misma F, mismo banco, importe exacto, sector coherente)</span>
 - <span style="background-color:{COLOR_VERDE}; padding:2px 8px;">Verde: Sugerencias — revisión de sectorización, Regla 7B (diferencias > 500) y DZ multiposición</span>
@@ -1096,7 +1089,7 @@ if archivo_subido is not None:
 - **Muro de Contención Contable:** Salvo la "Flex Referencia Parcial", NINGÚN cruce superará el tope estricto de {TOPE_DIAS_ALERTA} días de diferencia.
 - Los Nequi exigen candidato en mismo banco/sector y aplican la tolerancia morada o estricta de días.
 - Regla 7B: Diferencias altas de valor (> $500) en el mismo sector/fecha quedarán sugeridas en VERDE.
-""", unsafe_allow_html=True)
+''', unsafe_allow_html=True)
 
             c1, c2, c3, c4, c5, c6 = st.columns(6)
             c1.metric("Azul", total_azul)
