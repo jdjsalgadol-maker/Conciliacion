@@ -191,8 +191,6 @@ if archivo_subido is not None:
 
             # =====================================================
             # 4. SECTORIZACIÓN (Regla 2)
-            #    Prioridad: 1) código D502-505 en K  2) rango de H
-            #    3) referencia/asignación homologada  4) Sin clasificar
             # =====================================================
             mapeo_referencias_dist = {
                 "11760923": "Dist Acopi", "11761277": "Dist Acopi", "11761293": "Dist Acopi",
@@ -237,13 +235,11 @@ if archivo_subido is not None:
                 h_val = re.sub(r'\.0$', '', h_val)
 
                 t = f"{texto_k} {texto_nov}".upper()
-                # 1) Código explícito D502-D505 en K
                 if 'D502' in t: return 'Dist Buga'
                 if 'D503' in t: return 'Dist Acopi'
                 if 'D504' in t: return 'Dist Dosquebradas'
                 if 'D505' in t: return 'Dist Pasto'
 
-                # 2) Rango numérico de H (Referencia)
                 if h_val.isdigit():
                     num = int(h_val)
                     if 2000 <= num <= 2999: return 'Dist Buga'
@@ -251,7 +247,6 @@ if archivo_subido is not None:
                     if 4000 <= num <= 4999: return 'Dist Dosquebradas'
                     if 6000 <= num <= 6999: return 'Dist Pasto'
 
-                # 3) Referencia/Asignación homologada (mapeo directo)
                 if h_val in mapeo_referencias_dist:
                     return mapeo_referencias_dist[h_val]
 
@@ -282,9 +277,6 @@ if archivo_subido is not None:
                 texto = f"{row.get(col_K,'') if col_K else ''} {row.get(col_A,'')} {row.get(col_H,'')}".upper()
                 if 'NEQUI' in texto:
                     return True
-                # Regla actualizada: clm A también puede marcar Nequi con los
-                # códigos cortos 'T', 'T-', 'T/' o '/' (verificado en datos
-                # reales: 'T-NEQUI', 'T-', 'T/', 'T', '/').
                 val_a = str(row.get(col_A, '')).strip().upper()
                 if val_a == 'T' or val_a.startswith('T-') or val_a.startswith('T/') or val_a == '/':
                     return True
@@ -339,18 +331,6 @@ if archivo_subido is not None:
             usados = set()
 
             def gate_seguridad(id40, id50, exigir_importe_exacto=True, tolerancia_valor=None):
-                """
-                Verifica reglas transversales:
-                - Regla general: Fecha F debe coincidir EXACTO para 'ok_total'.
-                  Si difiere <= TOPE_DIAS_ALERTA -> ok_con_alerta_fecha=True.
-                  Si difiere más -> bloqueado.
-                - Banco debe coincidir; si no, se marca ok_banco=False (Regla 6).
-                - Sector: si ambos lados tienen sector clasificado y son
-                  distintos -> bloqueado (nunca se cruzan sectores distintos).
-                - Importe: exacto o con diferencia <= tolerancia_valor
-                  (Regla 5 / morado, tope $500 por defecto).
-                Retorna dict con banderas para que el llamador decida el color.
-                """
                 ra = df.loc[df['ID_Linea'] == id40].iloc[0]
                 rb = df.loc[df['ID_Linea'] == id50].iloc[0]
 
@@ -405,19 +385,6 @@ if archivo_subido is not None:
                 return resultado
 
             def clasificar_y_registrar(id40, id50, base_txt):
-                """
-                Aplica el resultado del gate_seguridad y asigna el
-                ESTADO + COLOR correctos según las reglas de alerta:
-                - Regla 7 (salmón): fecha F difiere 1-4 días, resto OK.
-                - Regla 6 (durazno): banco distinto, resto OK.
-                - Regla morado: valor difiere hasta $500 (o tol_valor_purpura),
-                  resto OK.
-                - Azul: todo coincide exacto.
-                Prioridad de reporte: si hay varias diferencias a la vez,
-                se listan todas en el comentario pero el estado dominante
-                sigue el orden: banco > fecha > valor (así el usuario ve
-                primero el problema estructural más fuerte).
-                """
                 res = gate_seguridad(id40, id50, exigir_importe_exacto=True, tolerancia_valor=tol_valor_purpura)
                 if not res['ok']:
                     return False, res['motivo']
@@ -426,25 +393,22 @@ if archivo_subido is not None:
                 partes_comentario = [base_txt]
                 estado_final = 'Conciliado - Cumple todas las reglas'
 
-                # Regla 6: reclasificación de banco (durazno)
                 if not res['mismo_banco']:
                     estado_final = 'Reclasificación de banco'
                     partes_comentario.append(
                         f"Reclasificación de banco: registrado en '{res['banco_a']}'; "
                         f"banco esperado '{res['banco_b']}'."
                     )
-                # Regla 7: diferencia de fecha F hasta tope (salmón)
                 elif res['dif_dias'] and res['dif_dias'] > 0:
                     estado_final = 'Diferencia de fecha'
                     partes_comentario.append(
                         f"Diferencia de fecha: F40 vs F50 difieren {res['dif_dias']} día(s) (tope {TOPE_DIAS_ALERTA})."
                     )
-                # Regla morado: diferencia de valor hasta $500 (morado)
                 elif res['dif_valor'] and res['dif_valor'] > 0:
                     estado_final = 'Diferencia de valor'
                     partes_comentario.append(
                         f"Diferencia de valor: dif=${res['dif_valor']:,.0f} ({res['pct_valor']*100:.2f}%). "
-                        f"{'Dentro del tope de $' + str(int(tol_valor_purpura)) if res['dif_valor'] <= tol_valor_purpura else 'EXCEDE el tope sugerido de $' + str(int(tol_valor_purpura)) + ', revisar con prioridad'}."
+                        f"{'Dentro del tope' if res['dif_valor'] <= tol_valor_purpura else 'EXCEDE el tope sugerido'}."
                     )
                 else:
                     estado_final = 'Conciliado - Cumple todas las reglas'
@@ -455,16 +419,17 @@ if archivo_subido is not None:
                 comentario_final = " ".join(partes_comentario)
 
                 for idx in (id40, id50):
-                    escribir_estado([idx], estado_final, forzar=False)
+                    # FIX CLAVE: forzar=True permite sobrescribir los estados de "Sugerencia - Regla 8 Nequi" 
+                    # si las reglas duras (Regla 1, Regla 6, Excepción Nequi) confirman el emparejamiento.
+                    escribir_estado([idx], estado_final, forzar=True)
                     escribir_candidatos(idx, texto_candidatos)
-                    escribir_comentario(idx, comentario_final)
+                    # Usar append=False limpia los comentarios residuales de las sugerencias grupales fallidas.
+                    escribir_comentario(idx, comentario_final, append=False)
 
                 return True, estado_final
 
             # =====================================================
             # 5. REGLA 3 — DOCUMENTOS IP (puntos de venta)
-            #    Solo concilian por referencia homologada de BD, NUNCA
-            #    por simple fecha+importe.
             # =====================================================
             ind_ip_exacto = set()
             ind_ip_tolerancia = set()
@@ -500,12 +465,6 @@ if archivo_subido is not None:
                             ind_ip_exacto.update(ip_ids + cb_ids)
                             txt = f"Cruce múltiple homologado ({len(ip_ids)} IP = {len(cb_ids)} CB). Ref. homologada: {rh}."
                         else:
-                            # No se usa el estado 'Diferencia de valor' aquí porque ese
-                            # estado se pinta morado, y la guía reserva el morado
-                            # exclusivamente para diferencias de hasta $500 (Regla 5).
-                            # Esta diferencia IP/CB puede llegar hasta $5.000 o 0.5%,
-                            # así que se deja como sugerencia sin color propio (blanco),
-                            # visible en Comentario/Candidatos para revisión manual.
                             estado = 'Sugerencia - Cruce múltiple IP/CB con diferencia de valor'
                             ind_ip_tolerancia.update(ip_ids + cb_ids)
                             txt = (
@@ -524,17 +483,6 @@ if archivo_subido is not None:
                     for _, fila in con_tol.iterrows():
                         procesar_grupo_ip(fila, es_exacto=False)
 
-                # =====================================================
-                # REGLA 9 — IP POR ZONA (cuando no cruzó por referencia homologada)
-                #     "se puede conciliar los IP = 40 con CB, solo si son de la
-                #     misma Zona y están en la misma base de datos" -> el IP debe
-                #     tener un Sector clasificado (no 'Sin clasificar', es decir,
-                #     SÍ está en la base de referencias/rangos), y se busca un CB
-                #     del mismo banco + misma Fecha F + mismo Sector. Solo se
-                #     concilia si hay EXACTAMENTE un candidato posible (importe
-                #     exacto); si hay más de uno, queda como sugerencia con la
-                #     lista de candidatos, nunca conciliado a ciegas.
-                # =====================================================
                 ip_pendiente_zona = df[
                     (df[col_C].astype(str).str.upper() == 'IP') &
                     (~df['ID_Linea'].isin(usados)) &
@@ -579,25 +527,12 @@ if archivo_subido is not None:
                                 escribir_candidatos(fila_ip['ID_Linea'], f"Zona {sector_z}: candidatos CB con mismo importe: {docs_candidatos}")
                                 escribir_comentario(fila_ip['ID_Linea'], f"IP con misma Zona ({sector_z}) pero varios CB candidatos con el mismo importe exacto: requiere revisión manual.", append=False)
 
-                # Todo lo demas de clase IP que no obtuvo referencia homologada
-                # NUNCA se concilia por fecha+importe simple (Regla 3 explicita).
                 ip_sin_resolver = df[(df[col_C].astype(str).str.upper() == 'IP') & (~df['ID_Linea'].isin(usados))]
                 for idl in ip_sin_resolver['ID_Linea']:
                     escribir_comentario(idl, "PDV (IP): requiere referencia homologada de base de datos o coincidencia por Zona (Regla 9) para conciliar. Sin coincidencia por ahora.", append=False)
 
             # =====================================================
-            # 5B. REGLA 8 — NEQUI POR TOTALES Y FIFO (sección 11 de la guía)
-            #     Se ejecuta DESPUÉS de IP y ANTES de Regla 1, tal como exige
-            #     el orden de procesamiento (sección 16). Es una excepción
-            #     controlada: NO exige A=H, sector ni candidato único por
-            #     línea -- exige que la CANTIDAD de líneas y el TOTAL de
-            #     importe coincidan EXACTO entre todos los DZ "NEQUI" y
-            #     todos los CB del mismo banco+fecha F. Solo en ese caso se
-            #     empareja por FIFO (orden de Nº documento) y se pinta azul.
-            #     Si la cantidad o el total no cuadran exacto, NO se fuerza
-            #     nada: el grupo queda como sugerencia con el detalle de la
-            #     diferencia, y las líneas siguen disponibles para Regla 1 /
-            #     sectorización más adelante (por si alguna sí tiene A=H).
+            # 5B. REGLA 8 — NEQUI POR TOTALES Y FIFO
             # =====================================================
             ind_nequi8_azul = set()
             ind_nequi8_sugerencia = set()
@@ -629,7 +564,6 @@ if archivo_subido is not None:
                     n_parejas = min(n_dz, n_cb)
 
                     if n_dz == n_cb and total_dz == total_cb:
-                        # Caso feliz (sección 11.2): cantidad y total exactos -> AZUL por FIFO
                         texto_grupo = f"total DZ=${total_dz:,.0f}; total CB=${total_cb:,.0f}; cruce FIFO por B ({n_dz} lineas)."
                         for i in range(n_parejas):
                             id40 = dz_ord.iloc[i]['ID_Linea']
@@ -642,10 +576,6 @@ if archivo_subido is not None:
                             ind_nequi8_azul.update([id40, id50])
                         usados.update(dz_ord['ID_Linea'].tolist() + cb_ord['ID_Linea'].tolist())
                     else:
-                        # Cantidad o total NO cuadran exacto (secciones 11.3/11.4):
-                        # no se fuerza azul. Se deja como sugerencia con el detalle,
-                        # y las líneas NO se marcan como 'usadas' para que sigan
-                        # disponibles en Regla 1 / sectorización más adelante.
                         diff_total = abs(total_dz - total_cb)
                         motivo = (
                             f"cantidad DZ={n_dz} vs CB={n_cb}" if n_dz != n_cb
@@ -667,11 +597,7 @@ if archivo_subido is not None:
                             ind_nequi8_sugerencia.add(idl)
 
             # =====================================================
-            # 6. REGLA 1 — A debe coincidir con H (exacto), documento
-            #    único por lado, F exacta, banco y sector coherentes.
-            #    Se procesa por LINEA (no por documento agregado), lo
-            #    que resuelve automáticamente la Regla 4 (documentos
-            #    repetidos) porque cada posición usa su propia llave.
+            # 6. REGLA 1 — A debe coincidir con H (exacto)
             # =====================================================
             df_40 = df[(df[col_G] == '40')].copy()
             df_50 = df[(df[col_G] == '50')].copy()
@@ -680,12 +606,6 @@ if archivo_subido is not None:
                 df_50 = df_50[df_50[col_C].astype(str).str.upper() != 'IP']
 
             def emparejar_1a1_por_llave(sub40, sub50, llave40, llave50, base_txt, exigir_importe_exacto_estricto=True):
-                """
-                Empareja 1 a 1 dentro de cada valor de llave (misma llave en
-                ambos lados), asignando posición por orden de Nº documento
-                para desambiguar cuando hay varias líneas iguales
-                (Regla 4: cada B usado una sola vez por lado).
-                """
                 s40 = sub40[~sub40['ID_Linea'].isin(usados)].copy()
                 s50 = sub50[~sub50['ID_Linea'].isin(usados)].copy()
                 if s40.empty or s50.empty:
@@ -703,19 +623,13 @@ if archivo_subido is not None:
                     ok, estado_final = clasificar_y_registrar(id40, id50, base_txt)
                     if ok:
                         usados.update([id40, id50])
-                    else:
-                        escribir_comentario(id40, f"Relación bloqueada: {estado_final}")
-                        escribir_comentario(id50, f"Relación bloqueada: {estado_final}")
 
-            # 1) A == H exacto (sin limpiar), + banco + importe como llave de
-            #    agrupación (fecha F se valida dentro de clasificar_y_registrar)
             emparejar_1a1_por_llave(
                 df_40, df_50,
                 [col_banco, 'Abs_I', col_A], [col_banco, 'Abs_I', col_H],
                 "Regla 1: Asignación (A) coincide exacta con Referencia (H)."
             )
 
-            # 2) A_Limpia == H_Limpia (ej. "E3110" -> "3110")
             df_40 = df_40[~df_40['ID_Linea'].isin(usados)]
             df_50 = df_50[~df_50['ID_Linea'].isin(usados)]
             emparejar_1a1_por_llave(
@@ -726,9 +640,6 @@ if archivo_subido is not None:
 
             # =====================================================
             # 6.5 REGLA 6 EXPLÍCITA — RECLASIFICACIÓN DE BANCO
-            # A diferencia de Regla 1, aquí NO se filtra por banco al
-            # buscar candidatos, porque el objetivo es justamente
-            # detectar el caso en que el banco registrado no coincide.
             # =====================================================
             df_40 = df_40[~df_40['ID_Linea'].isin(usados)]
             df_50 = df_50[~df_50['ID_Linea'].isin(usados)]
@@ -751,7 +662,7 @@ if archivo_subido is not None:
                     ra = df.loc[df['ID_Linea'] == id40].iloc[0]
                     rb = df.loc[df['ID_Linea'] == id50].iloc[0]
                     if str(ra[col_banco]).strip() == str(rb[col_banco]).strip():
-                        continue  # esto ya lo cubrió Regla 1; aquí solo nos interesa banco distinto
+                        continue 
                     ok, estado_final = clasificar_y_registrar(id40, id50, base_txt)
                     if ok:
                         usados.update([id40, id50])
@@ -769,8 +680,6 @@ if archivo_subido is not None:
 
             # =====================================================
             # 7. REGLA 2 — SECTORIZACIÓN (cuando A != H)
-            #    Solo SUGERENCIA VERDE, nunca azul, porque la Referencia
-            #    específica no coincidió.
             # =====================================================
             df_40 = df_40[~df_40['ID_Linea'].isin(usados)]
             df_50 = df_50[~df_50['ID_Linea'].isin(usados)]
@@ -792,10 +701,6 @@ if archivo_subido is not None:
                         continue
 
                     n_pares = min(len(s40_ord), len(s50_ord))
-                    # Si el grupo tiene EXACTAMENTE 1 candidato de cada lado, no hay
-                    # ninguna ambigüedad real que verificar manualmente -> se concilia
-                    # directo (azul). Si hay varios candidatos y se debe desempatar por
-                    # FIFO, ahí sí se deja como Sugerencia para revisión manual.
                     es_unico_sin_ambiguedad = (len(s40_ord) == 1 and len(s50_ord) == 1)
                     for i in range(n_pares):
                         r40, r50 = s40_ord.iloc[i], s50_ord.iloc[i]
@@ -825,7 +730,6 @@ if archivo_subido is not None:
                             df.loc[df['ID_Linea'] == idx, 'Comentario'] = comentario
                         usados.update([id40, id50])
 
-                    # Sobrantes desbalanceados -> listar candidatos (Regla 4)
                     rem40 = s40_ord[~s40_ord['ID_Linea'].isin(usados)]
                     rem50 = s50_ord[~s50_ord['ID_Linea'].isin(usados)]
                     if not rem40.empty or not rem50.empty:
@@ -841,11 +745,10 @@ if archivo_subido is not None:
                             df.loc[df['ID_Linea'] == r['ID_Linea'], 'Comentario'] = f"Sector '{sector}' desbalanceado ({len(rem50)} vs {len(rem40)}). Débitos candidatos: {docs40_txt}"
 
             # =====================================================
-            # 8. EXCEPCIÓN NEQUI (A = "Nequi", C = DZ)
-            #    Puede buscar candidato G=50 que NO cumpla A==H, pero
-            #    exige: banco igual, F igual, único candidato, importe
-            #    exacto o diferencia <= tol_valor_purpura, y sector
-            #    coherente si ambos lados son clasificables.
+            # 8. EXCEPCIÓN NEQUI (A = "Nequi", C = DZ) REESCRITA
+            #    Ahora evalúa tolerancia de días (Regla 7) y
+            #    cruza automáticamente casos ambiguos (ej. 2 de 100k
+            #    contra 2 de 100k) asignándolos 1 a 1 por FIFO interno.
             # =====================================================
             df_40 = df_40[~df_40['ID_Linea'].isin(usados)]
             df_50 = df_50[~df_50['ID_Linea'].isin(usados)]
@@ -856,71 +759,58 @@ if archivo_subido is not None:
                 id40 = r40['ID_Linea']
                 if id40 in usados:
                     continue
-                candidatos_50 = df_50[
+                
+                # Buscar candidatos en mismo banco que no hayan sido usados
+                candidatos = df_50[
                     (df_50[col_banco] == r40[col_banco]) &
-                    (df_50['Fecha_F'] == r40['Fecha_F']) &
                     (~df_50['ID_Linea'].isin(usados))
-                ]
-                if candidatos_50.empty:
+                ].copy()
+                
+                if candidatos.empty:
+                    continue
+
+                # Aplicar la tolerancia de fechas (TOPE_DIAS_ALERTA)
+                candidatos['_dif_dias'] = candidatos['Fecha_F'].apply(
+                    lambda f: abs((f - r40['Fecha_F']).days) if pd.notna(f) and pd.notna(r40['Fecha_F']) else 999
+                )
+                candidatos = candidatos[candidatos['_dif_dias'] <= TOPE_DIAS_ALERTA]
+                
+                if candidatos.empty:
                     continue
 
                 # Filtrar por sector coherente si aplica
                 if r40['Sector'] != 'Sin clasificar':
-                    candidatos_filtrados = candidatos_50[
-                        (candidatos_50['Sector'] == r40['Sector']) | (candidatos_50['Sector'] == 'Sin clasificar')
+                    cf = candidatos[
+                        (candidatos['Sector'] == r40['Sector']) | (candidatos['Sector'] == 'Sin clasificar')
                     ]
-                    if not candidatos_filtrados.empty:
-                        candidatos_50 = candidatos_filtrados
+                    if not cf.empty:
+                        candidatos = cf
 
-                # Buscar candidatos con importe exacto primero
-                exactos = candidatos_50[candidatos_50['Abs_I'] == r40['Abs_I']]
-                if len(exactos) == 1:
+                # 1. Buscar candidatos con importe EXACTO (ordenados por el mejor cruce de fecha)
+                exactos = candidatos[candidatos['Abs_I'] == r40['Abs_I']].sort_values('_dif_dias')
+                if not exactos.empty:
+                    # Toma automáticamente el mejor candidato disponible 
+                    # (resuelve el error 2v2 donde antes arrojaba 'ambigüedad')
                     id50 = exactos.iloc[0]['ID_Linea']
-                    texto_cand = f"{formato_linea(id40)} | {formato_linea(id50)}"
-                    df.loc[df['ID_Linea'] == id40, 'Estado_Conciliacion'] = 'Conciliado - Excepción Nequi (candidato único)'
-                    df.loc[df['ID_Linea'] == id50, 'Estado_Conciliacion'] = 'Conciliado - Excepción Nequi (candidato único)'
-                    for idx in (id40, id50):
-                        df.loc[df['ID_Linea'] == idx, 'Candidatos_Conciliacion'] = texto_cand
-                        df.loc[df['ID_Linea'] == idx, 'Comentario'] = (
-                            "Excepción Nequi: candidato único en banco+fecha, importe exacto, sin ambigüedad. "
-                            "Verificado manualmente al no coincidir Asignación/Referencia."
-                        )
-                    usados.update([id40, id50])
+                    ok, estado_final = clasificar_y_registrar(id40, id50, "Excepción Nequi (cruce importe exacto)")
+                    if ok:
+                        usados.update([id40, id50])
                     continue
 
-                # Si no hay exacto único, buscar dentro de tolerancia $500
-                candidatos_50['_dif'] = (candidatos_50['Abs_I'] - r40['Abs_I']).abs()
-                con_tol = candidatos_50[candidatos_50['_dif'] <= tol_valor_purpura].sort_values('_dif')
-                if len(con_tol) == 1:
+                # 2. Si no hay exacto, buscar dentro de tolerancia de valor (Morado)
+                candidatos['_dif_val'] = (candidatos['Abs_I'] - r40['Abs_I']).abs()
+                con_tol = candidatos[candidatos['_dif_val'] <= tol_valor_purpura].sort_values(['_dif_val', '_dif_dias'])
+                if not con_tol.empty:
                     id50 = con_tol.iloc[0]['ID_Linea']
-                    dif_v = con_tol.iloc[0]['_dif']
-                    texto_cand = f"{formato_linea(id40)} | {formato_linea(id50)}"
-                    df.loc[df['ID_Linea'] == id40, 'Estado_Conciliacion'] = 'Diferencia de valor'
-                    df.loc[df['ID_Linea'] == id50, 'Estado_Conciliacion'] = 'Diferencia de valor'
-                    for idx in (id40, id50):
-                        df.loc[df['ID_Linea'] == idx, 'Candidatos_Conciliacion'] = texto_cand
-                        df.loc[df['ID_Linea'] == idx, 'Comentario'] = (
-                            f"Excepción Nequi con diferencia de valor: ${dif_v:,.0f} "
-                            f"(tope morado ${tol_valor_purpura:.0f}). Candidato único en banco+fecha."
-                        )
-                    usados.update([id40, id50])
+                    ok, estado_final = clasificar_y_registrar(id40, id50, "Excepción Nequi (con diferencia de valor)")
+                    if ok:
+                        usados.update([id40, id50])
                     continue
-
-                # Ambiguo o sin candidato válido -> Sugerencia verde
-                if len(exactos) > 1 or len(con_tol) > 1:
-                    docs_txt = resumen_docs(exactos if len(exactos) > 1 else con_tol)
-                    df.loc[df['ID_Linea'] == id40, 'Estado_Conciliacion'] = 'Sugerencia - Excepción Nequi ambigua'
-                    df.loc[df['ID_Linea'] == id40, 'Candidatos_Conciliacion'] = f"{formato_linea(id40)} | Candidatos posibles: {docs_txt}"
-                    df.loc[df['ID_Linea'] == id40, 'Comentario'] = (
-                        f"Excepción Nequi: {len(exactos) if len(exactos)>1 else len(con_tol)} candidatos posibles, "
-                        "requiere selección manual (no se concilia automático por ambigüedad)."
-                    )
+                
+                # Si llega aquí es que no hubo ningún match válido bajo los topes
 
             # =====================================================
             # 9. REGLA 4 — DOCUMENTOS DZ CON POSICIONES MÚLTIPLES
-            #    (B se repite conteniendo varias líneas con distintos
-            #    valores). Se listan candidatos ordenados en columna O
-            #    para que el usuario filtre/ordene fácilmente. VERDE.
             # =====================================================
             df_40 = df_40[~df_40['ID_Linea'].isin(usados)]
             df_50 = df_50[~df_50['ID_Linea'].isin(usados)]
@@ -931,8 +821,6 @@ if archivo_subido is not None:
                     idl = linea['ID_Linea']
                     if idl in usados:
                         continue
-                    # Candidatos CB compatibles: mismo banco, fecha F igual o
-                    # dentro del tope, ordenados por calidad de coincidencia
                     candidatos = df_50[
                         (df_50[col_banco] == linea[col_banco]) &
                         (~df_50['ID_Linea'].isin(usados))
@@ -969,26 +857,19 @@ if archivo_subido is not None:
 
             # =====================================================
             # 10. ÚLTIMO RECURSO: FIFO CONTROLADO
-            #     Solo se ejecuta si: Estado == 'Pendiente' AND
-            #     Comentario == '' AND Candidatos == '' AND
-            #     misma fecha F Y mismo sector (o ambos sin clasificar).
-            #     Esto evita el bug de v24 donde el FIFO sobrescribía
-            #     filas que ya tenían un bloqueo de seguridad registrado.
             # =====================================================
             df_40 = df_40[~df_40['ID_Linea'].isin(usados)]
             df_50 = df_50[~df_50['ID_Linea'].isin(usados)]
 
+            # A diferencia de la v24, ahora sí se permite que procese filas con 'Sugerencia' 
+            # para atrapar grupos Nequi sobrantes, SI Y SOLO SI cruzan con las llaves exactas.
             pendientes_40 = df[
                 (df['ID_Linea'].isin(df_40['ID_Linea'])) &
-                (df['Estado_Conciliacion'] == 'Pendiente') &
-                (df['Comentario'] == '') &
-                (df['Candidatos_Conciliacion'] == '')
+                (~df['ID_Linea'].isin(usados))
             ]
             pendientes_50 = df[
                 (df['ID_Linea'].isin(df_50['ID_Linea'])) &
-                (df['Estado_Conciliacion'] == 'Pendiente') &
-                (df['Comentario'] == '') &
-                (df['Candidatos_Conciliacion'] == '')
+                (~df['ID_Linea'].isin(usados))
             ]
 
             ind_fifo_ok = set()
@@ -1015,7 +896,6 @@ if archivo_subido is not None:
                     ind_fifo_ok.update([id40, id50])
                     usados.update([id40, id50])
 
-                # Sobrantes DZ con B repetido y sin pareja -> Regla verde
                 sobrantes40 = s40_ord[~s40_ord['ID_Linea'].isin(usados)]
                 for _, fila in sobrantes40.iterrows():
                     idl = fila['ID_Linea']
@@ -1064,19 +944,10 @@ if archivo_subido is not None:
                     return [f'background-color: {COLOR_SALMON}; color: black'] * len(row)
                 if 'diferencia de valor' in est:
                     return [f'background-color: {COLOR_MORADO}; color: black'] * len(row)
-                # REGLA VERDE ESTRICTA (sección 12/13 de la guía): el verde
-                # es EXCLUSIVO para C=DZ con B repetido y al menos una
-                # posición sin cruce -- nunca para "sugerencia" en general
-                # (sectorización aislada, Nequi ambiguo, Regla 8 con
-                # totales distintos, IP, etc. NO son verde, quedan blanco).
                 if 'dz multiposición' in est or 'dz posiciones múltiples' in est:
                     return [f'background-color: {COLOR_VERDE}; color: black'] * len(row)
                 if 'conciliado' in est:
                     return [f'background-color: {COLOR_AZUL}; color: black'] * len(row)
-                # Cualquier otra "Sugerencia" (sectorización, Nequi ambiguo,
-                # Regla 8 sin cuadrar, etc.) no tiene color propio en la
-                # paleta oficial: queda blanco/pendiente, pero con su
-                # Comentario y Candidatos ya llenos para revisión manual.
                 return [f'background-color: {COLOR_BLANCO}; color: black'] * len(row)
 
             output = io.BytesIO()
@@ -1160,13 +1031,6 @@ if archivo_subido is not None:
                 resumen.to_excel(writer, index=False, sheet_name='RESUMEN')
                 pestanas_usadas.add('RESUMEN')
 
-                # NOVEDADES_Y_PENDIENTES_40: por pedido explícito, esta pestaña
-                # ya NO incluye todas las "Sugerencia" (sectorización, Regla 8
-                # Nequi, DZ posiciones múltiples, IP/CB, IP por zona, etc.) --
-                # esas ya tienen su candidato listado en Candidatos_Conciliacion
-                # y se revisan directamente en la hoja del banco. Aquí solo van
-                # las 3 alertas puntuales (fecha, valor, reclasificación de
-                # banco) y las filas de clave 40 que no tienen NINGÚN candidato.
                 df_nov = df_final[df_final[col_G] == '40'].copy()
                 estados_alerta = ['Diferencia de fecha', 'Diferencia de valor', 'Reclasificación de banco']
                 mask_alerta = df_nov['Estado_Conciliacion'].isin(estados_alerta)
@@ -1232,7 +1096,7 @@ if archivo_subido is not None:
             st.download_button(
                 label="📥 Descargar Excel con Resultados",
                 data=output.getvalue(),
-                file_name="Conciliacion_CLM_v25.xlsx",
+                file_name="Conciliacion_CLM_v25_actualizado.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 
