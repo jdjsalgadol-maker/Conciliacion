@@ -320,10 +320,11 @@ if archivo_subido is not None:
 
             usados = set()
 
-            def gate_seguridad(id40, id50, exigir_importe_exacto=True, tolerancia_valor=None, max_dias=TOPE_DIAS_ALERTA):
+            def gate_seguridad(id40, id50, exigir_importe_exacto=True, tolerancia_valor=None):
                 """
                 Verifica reglas transversales: Banco, Sector, Importe y Fecha.
-                Se adapta el parámetro max_dias para flexibilizar fechas en casos excepcionales.
+                Se aplica estrictamente el TOPE_DIAS_ALERTA (máximo 4 días por defecto)
+                para prevenir errores contables.
                 """
                 ra = df.loc[df['ID_Linea'] == id40].iloc[0]
                 rb = df.loc[df['ID_Linea'] == id50].iloc[0]
@@ -342,8 +343,9 @@ if archivo_subido is not None:
                 dif_dias = abs((fa - fb).days)
                 resultado['dif_dias'] = dif_dias
                 
-                if dif_dias > max_dias:
-                    resultado['motivo'] = f"Diferencia de fecha F fuera de rango ({dif_dias} días > {max_dias})"
+                # BARRERA DE SEGURIDAD ESTRICTA: Ningun cruce puede exceder el TOPE
+                if dif_dias > TOPE_DIAS_ALERTA:
+                    resultado['motivo'] = f"Diferencia de fecha F fuera de rango ({dif_dias} días > {TOPE_DIAS_ALERTA})"
                     return resultado
 
                 banco_a = str(ra[col_banco]).strip()
@@ -379,11 +381,11 @@ if archivo_subido is not None:
                 resultado['motivo'] = "Cumple reglas transversales"
                 return resultado
 
-            def clasificar_y_registrar(id40, id50, base_txt, max_dias=TOPE_DIAS_ALERTA):
+            def clasificar_y_registrar(id40, id50, base_txt):
                 """
                 Aplica el resultado del gate_seguridad y asigna el ESTADO + COLOR correctos.
                 """
-                res = gate_seguridad(id40, id50, exigir_importe_exacto=True, tolerancia_valor=tol_valor_purpura, max_dias=max_dias)
+                res = gate_seguridad(id40, id50, exigir_importe_exacto=True, tolerancia_valor=tol_valor_purpura)
                 if not res['ok']:
                     return False, res['motivo']
 
@@ -397,12 +399,8 @@ if archivo_subido is not None:
                         f"Reclasificación de banco: registrado en '{res['banco_a']}'; banco esperado '{res['banco_b']}'."
                     )
                 elif res['dif_dias'] and res['dif_dias'] > 0:
-                    if res['dif_dias'] > TOPE_DIAS_ALERTA:
-                        estado_final = 'Diferencia de fecha extrema'
-                        partes_comentario.append(f"Diferencia de fecha (salto extremo): {res['dif_dias']} días (Error de digitación/mes?).")
-                    else:
-                        estado_final = 'Diferencia de fecha'
-                        partes_comentario.append(f"Diferencia de fecha: F40 vs F50 difieren {res['dif_dias']} día(s) (tope {TOPE_DIAS_ALERTA}).")
+                    estado_final = 'Diferencia de fecha'
+                    partes_comentario.append(f"Diferencia de fecha: F40 vs F50 difieren {res['dif_dias']} día(s) (tope {TOPE_DIAS_ALERTA}).")
                 elif res['dif_valor'] and res['dif_valor'] > 0:
                     estado_final = 'Diferencia de valor'
                     partes_comentario.append(
@@ -636,8 +634,9 @@ if archivo_subido is not None:
             )
 
             # =====================================================
-            # 6.2 REGLA 1 FLEX: RELACION PARCIAL LIMPIA (Fuerza fecha)
+            # 6.2 REGLA 1 FLEX: RELACION PARCIAL LIMPIA
             # Resuelve Ej: A="T-9006235207" contiene a H="900623520"
+            # Ahora respeta estrictamente el límite de <= 4 días.
             # =====================================================
             def emparejar_parcial_limpia(sub40, sub50, base_txt):
                 s40 = sub40[~sub40['ID_Linea'].isin(usados)].copy()
@@ -658,8 +657,8 @@ if archivo_subido is not None:
                         if len(h_str) < 6: continue
                         
                         if (a_str in h_str) or (h_str in a_str):
-                            # Se perdona la tolerancia de fecha por certeza de código de referencia (max_dias = 999)
-                            ok, _ = clasificar_y_registrar(id40, id50, base_txt, max_dias=999)
+                            # Ya no se fuerza el max_dias=999. Respeta el gate_seguridad de 4 días.
+                            ok, _ = clasificar_y_registrar(id40, id50, base_txt)
                             if ok:
                                 usados.update([id40, id50])
                                 break
@@ -787,7 +786,6 @@ if archivo_subido is not None:
 
             # =====================================================
             # 8. EXCEPCIÓN NEQUI (A = "Nequi", C = DZ)
-            # FIX: Evalúa tolerancia de días ampliada y empareja directo sin ambigüedad restrictiva
             # =====================================================
             df_40 = df_40[~df_40['ID_Linea'].isin(usados)]
             df_50 = df_50[~df_50['ID_Linea'].isin(usados)]
@@ -812,23 +810,28 @@ if archivo_subido is not None:
                     if not cf.empty:
                         candidatos = cf
 
+                # Calcular la diferencia de días
                 candidatos['_dif_dias'] = candidatos['Fecha_F'].apply(
                     lambda x: abs((x - r40['Fecha_F']).days) if pd.notna(x) and pd.notna(r40['Fecha_F']) else 999
                 )
                 
-                # Importes exactos (Flexibilidad de fechas infinita para asegurar el Nequi)
+                # APLICAMOS EL FILTRO ESTRICTO DE FECHAS ANTES DE EMPAREJAR
+                candidatos = candidatos[candidatos['_dif_dias'] <= TOPE_DIAS_ALERTA]
+                
+                if candidatos.empty:
+                    continue
+
+                # Importes exactos (Ya filtrados por <= 4 días)
                 exactos = candidatos[candidatos['Abs_I'] == r40['Abs_I']].sort_values('_dif_dias')
                 if not exactos.empty:
                     id50 = exactos.iloc[0]['ID_Linea']
-                    ok, _ = clasificar_y_registrar(id40, id50, "Excepción Nequi (cruce importe exacto)", max_dias=999)
+                    ok, _ = clasificar_y_registrar(id40, id50, "Excepción Nequi (cruce importe exacto)")
                     if ok: usados.update([id40, id50])
                     continue
                     
                 # Si no hay exacto único, buscar dentro de tolerancia $500 (Regla morada)
                 candidatos['_dif_val'] = (candidatos['Abs_I'] - r40['Abs_I']).abs()
                 con_tol = candidatos[candidatos['_dif_val'] <= tol_valor_purpura].sort_values(['_dif_val', '_dif_dias'])
-                # Mantenemos tolerancia salmón para este cruce indirecto
-                con_tol = con_tol[con_tol['_dif_dias'] <= TOPE_DIAS_ALERTA]
                 if not con_tol.empty:
                     id50 = con_tol.iloc[0]['ID_Linea']
                     ok, _ = clasificar_y_registrar(id40, id50, "Excepción Nequi (con diferencia de valor)")
@@ -887,8 +890,6 @@ if archivo_subido is not None:
             df_40 = df_40[~df_40['ID_Linea'].isin(usados)]
             df_50 = df_50[~df_50['ID_Linea'].isin(usados)]
 
-            # A diferencia de la v24, permitimos que el FIFO analice filas que tienen 
-            # alertas pasadas o sugerencias, SI Y SOLO SI no están cruzadas (no usadas).
             pendientes_40 = df[
                 (df['ID_Linea'].isin(df_40['ID_Linea'])) &
                 (~df['ID_Linea'].isin(usados))
@@ -967,8 +968,6 @@ if archivo_subido is not None:
                     return [f'background-color: {COLOR_BLANCO}; color: black'] * len(row)
                 if 'reclasificación' in est:
                     return [f'background-color: {COLOR_DURAZNO}; color: black'] * len(row)
-                if 'diferencia de fecha extrema' in est:
-                    return [f'background-color: {COLOR_SALMON}; color: black'] * len(row)
                 if 'diferencia de fecha' in est:
                     return [f'background-color: {COLOR_SALMON}; color: black'] * len(row)
                 if 'diferencia de valor' in est:
@@ -1061,7 +1060,7 @@ if archivo_subido is not None:
                 pestanas_usadas.add('RESUMEN')
 
                 df_nov = df_final[df_final[col_G] == '40'].copy()
-                estados_alerta = ['Diferencia de fecha', 'Diferencia de fecha extrema', 'Diferencia de valor', 'Reclasificación de banco']
+                estados_alerta = ['Diferencia de fecha', 'Diferencia de valor', 'Reclasificación de banco']
                 mask_alerta = df_nov['Estado_Conciliacion'].isin(estados_alerta)
                 mask_sin_candidato = df_nov['Candidatos_Conciliacion'].astype(str).str.strip().isin(['', 'nan', 'None'])
                 df_nov = df_nov[mask_alerta | mask_sin_candidato]
