@@ -280,7 +280,15 @@ if archivo_subido is not None:
 
             def es_nequi(row):
                 texto = f"{row.get(col_K,'') if col_K else ''} {row.get(col_A,'')} {row.get(col_H,'')}".upper()
-                return 'NEQUI' in texto
+                if 'NEQUI' in texto:
+                    return True
+                # Regla actualizada: clm A también puede marcar Nequi con los
+                # códigos cortos 'T', 'T-', 'T/' o '/' (verificado en datos
+                # reales: 'T-NEQUI', 'T-', 'T/', 'T', '/').
+                val_a = str(row.get(col_A, '')).strip().upper()
+                if val_a == 'T' or val_a.startswith('T-') or val_a.startswith('T/') or val_a == '/':
+                    return True
+                return False
 
             def limpiar_numero(v):
                 if pd.isna(v): return ''
@@ -410,7 +418,7 @@ if archivo_subido is not None:
                 sigue el orden: banco > fecha > valor (así el usuario ve
                 primero el problema estructural más fuerte).
                 """
-                res = gate_seguridad(id40, id50, exigir_importe_exacto=True, tolerancia_valor=tol_valor_abs_general)
+                res = gate_seguridad(id40, id50, exigir_importe_exacto=True, tolerancia_valor=tol_valor_purpura)
                 if not res['ok']:
                     return False, res['motivo']
 
@@ -492,7 +500,13 @@ if archivo_subido is not None:
                             ind_ip_exacto.update(ip_ids + cb_ids)
                             txt = f"Cruce múltiple homologado ({len(ip_ids)} IP = {len(cb_ids)} CB). Ref. homologada: {rh}."
                         else:
-                            estado = 'Diferencia de valor'
+                            # No se usa el estado 'Diferencia de valor' aquí porque ese
+                            # estado se pinta morado, y la guía reserva el morado
+                            # exclusivamente para diferencias de hasta $500 (Regla 5).
+                            # Esta diferencia IP/CB puede llegar hasta $5.000 o 0.5%,
+                            # así que se deja como sugerencia sin color propio (blanco),
+                            # visible en Comentario/Candidatos para revisión manual.
+                            estado = 'Sugerencia - Cruce múltiple IP/CB con diferencia de valor'
                             ind_ip_tolerancia.update(ip_ids + cb_ids)
                             txt = (
                                 f"Sugerencia IP/CB con diferencia de valor "
@@ -510,11 +524,66 @@ if archivo_subido is not None:
                     for _, fila in con_tol.iterrows():
                         procesar_grupo_ip(fila, es_exacto=False)
 
+                # =====================================================
+                # REGLA 9 — IP POR ZONA (cuando no cruzó por referencia homologada)
+                #     "se puede conciliar los IP = 40 con CB, solo si son de la
+                #     misma Zona y están en la misma base de datos" -> el IP debe
+                #     tener un Sector clasificado (no 'Sin clasificar', es decir,
+                #     SÍ está en la base de referencias/rangos), y se busca un CB
+                #     del mismo banco + misma Fecha F + mismo Sector. Solo se
+                #     concilia si hay EXACTAMENTE un candidato posible (importe
+                #     exacto); si hay más de uno, queda como sugerencia con la
+                #     lista de candidatos, nunca conciliado a ciegas.
+                # =====================================================
+                ip_pendiente_zona = df[
+                    (df[col_C].astype(str).str.upper() == 'IP') &
+                    (~df['ID_Linea'].isin(usados)) &
+                    (df['Sector'] != 'Sin clasificar')
+                ]
+                if not ip_pendiente_zona.empty:
+                    cb_disponible_zona = df[
+                        (df[col_G] == '50') &
+                        (df[col_C].astype(str).str.upper() != 'IP') &
+                        (~df['ID_Linea'].isin(usados))
+                    ]
+                    for (banco_z, fecha_z, sector_z), grupo_ip in ip_pendiente_zona.groupby([col_banco, 'Fecha_F', 'Sector']):
+                        grupo_ip = grupo_ip[~grupo_ip['ID_Linea'].isin(usados)]
+                        if grupo_ip.empty:
+                            continue
+                        candidatos_cb = cb_disponible_zona[
+                            (cb_disponible_zona[col_banco] == banco_z) &
+                            (cb_disponible_zona['Fecha_F'] == fecha_z) &
+                            (cb_disponible_zona['Sector'] == sector_z) &
+                            (~cb_disponible_zona['ID_Linea'].isin(usados))
+                        ]
+                        if candidatos_cb.empty:
+                            continue
+                        for _, fila_ip in grupo_ip.iterrows():
+                            if fila_ip['ID_Linea'] in usados:
+                                continue
+                            match_importe = candidatos_cb[
+                                (~candidatos_cb['ID_Linea'].isin(usados)) &
+                                (candidatos_cb['Abs_I'] == fila_ip['Abs_I'])
+                            ]
+                            docs_candidatos = resumen_docs(match_importe) if len(match_importe) else ''
+                            if len(match_importe) == 1:
+                                id_cb = match_importe.iloc[0]['ID_Linea']
+                                texto_cand = f"{formato_linea(fila_ip['ID_Linea'])} | {formato_linea(id_cb)}"
+                                for idx in (fila_ip['ID_Linea'], id_cb):
+                                    df.loc[df['ID_Linea'] == idx, 'Estado_Conciliacion'] = 'Conciliado - IP por Zona (Regla 9)'
+                                    df.loc[df['ID_Linea'] == idx, 'Candidatos_Conciliacion'] = texto_cand
+                                    df.loc[df['ID_Linea'] == idx, 'Comentario'] = f"IP conciliado por misma Zona ({sector_z}) e importe exacto."
+                                usados.update([fila_ip['ID_Linea'], id_cb])
+                            elif len(match_importe) > 1:
+                                escribir_estado([fila_ip['ID_Linea']], 'Sugerencia - IP por Zona (varios candidatos)', forzar=False)
+                                escribir_candidatos(fila_ip['ID_Linea'], f"Zona {sector_z}: candidatos CB con mismo importe: {docs_candidatos}")
+                                escribir_comentario(fila_ip['ID_Linea'], f"IP con misma Zona ({sector_z}) pero varios CB candidatos con el mismo importe exacto: requiere revisión manual.", append=False)
+
                 # Todo lo demas de clase IP que no obtuvo referencia homologada
                 # NUNCA se concilia por fecha+importe simple (Regla 3 explicita).
                 ip_sin_resolver = df[(df[col_C].astype(str).str.upper() == 'IP') & (~df['ID_Linea'].isin(usados))]
                 for idl in ip_sin_resolver['ID_Linea']:
-                    escribir_comentario(idl, "PDV (IP): requiere referencia homologada de base de datos para conciliar. Sin coincidencia por ahora.", append=False)
+                    escribir_comentario(idl, "PDV (IP): requiere referencia homologada de base de datos o coincidencia por Zona (Regla 9) para conciliar. Sin coincidencia por ahora.", append=False)
 
             # =====================================================
             # 5B. REGLA 8 — NEQUI POR TOTALES Y FIFO (sección 11 de la guía)
