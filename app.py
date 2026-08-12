@@ -21,16 +21,6 @@
 #   O -> Candidatos_Conciliacion (candidatos que el usuario puede filtrar)
 #
 # =========================================================================
-# CORRECCION CLAVE FRENTE A v24:
-# La fecha D (periodo) YA NO PUEDE sustituir a F. En v24 se permitia
-# conciliar con Referencia exacta aunque el periodo contable (D) fuera
-# distinto. Eso queda ELIMINADO. Ahora:
-#   - F debe coincidir EXACTO para "Conciliado" (azul).
-#   - Si F difiere hasta 4 dias (tope fijo, Regla 7) y todo lo demas
-#     coincide -> Alerta de fecha (SALMON), nunca azul.
-#   - D solo se usa para fines informativos/periodo, nunca bloquea ni
-#     habilita conciliacion.
-# =========================================================================
 
 import streamlit as st
 import pandas as pd
@@ -330,7 +320,11 @@ if archivo_subido is not None:
 
             usados = set()
 
-            def gate_seguridad(id40, id50, exigir_importe_exacto=True, tolerancia_valor=None):
+            def gate_seguridad(id40, id50, exigir_importe_exacto=True, tolerancia_valor=None, max_dias=TOPE_DIAS_ALERTA):
+                """
+                Verifica reglas transversales: Banco, Sector, Importe y Fecha.
+                Se adapta el parámetro max_dias para flexibilizar fechas en casos excepcionales.
+                """
                 ra = df.loc[df['ID_Linea'] == id40].iloc[0]
                 rb = df.loc[df['ID_Linea'] == id50].iloc[0]
 
@@ -347,8 +341,9 @@ if archivo_subido is not None:
                     return resultado
                 dif_dias = abs((fa - fb).days)
                 resultado['dif_dias'] = dif_dias
-                if dif_dias > TOPE_DIAS_ALERTA:
-                    resultado['motivo'] = f"Diferencia de fecha F fuera de rango ({dif_dias} días > {TOPE_DIAS_ALERTA})"
+                
+                if dif_dias > max_dias:
+                    resultado['motivo'] = f"Diferencia de fecha F fuera de rango ({dif_dias} días > {max_dias})"
                     return resultado
 
                 banco_a = str(ra[col_banco]).strip()
@@ -384,8 +379,11 @@ if archivo_subido is not None:
                 resultado['motivo'] = "Cumple reglas transversales"
                 return resultado
 
-            def clasificar_y_registrar(id40, id50, base_txt):
-                res = gate_seguridad(id40, id50, exigir_importe_exacto=True, tolerancia_valor=tol_valor_purpura)
+            def clasificar_y_registrar(id40, id50, base_txt, max_dias=TOPE_DIAS_ALERTA):
+                """
+                Aplica el resultado del gate_seguridad y asigna el ESTADO + COLOR correctos.
+                """
+                res = gate_seguridad(id40, id50, exigir_importe_exacto=True, tolerancia_valor=tol_valor_purpura, max_dias=max_dias)
                 if not res['ok']:
                     return False, res['motivo']
 
@@ -396,19 +394,20 @@ if archivo_subido is not None:
                 if not res['mismo_banco']:
                     estado_final = 'Reclasificación de banco'
                     partes_comentario.append(
-                        f"Reclasificación de banco: registrado en '{res['banco_a']}'; "
-                        f"banco esperado '{res['banco_b']}'."
+                        f"Reclasificación de banco: registrado en '{res['banco_a']}'; banco esperado '{res['banco_b']}'."
                     )
                 elif res['dif_dias'] and res['dif_dias'] > 0:
-                    estado_final = 'Diferencia de fecha'
-                    partes_comentario.append(
-                        f"Diferencia de fecha: F40 vs F50 difieren {res['dif_dias']} día(s) (tope {TOPE_DIAS_ALERTA})."
-                    )
+                    if res['dif_dias'] > TOPE_DIAS_ALERTA:
+                        estado_final = 'Diferencia de fecha extrema'
+                        partes_comentario.append(f"Diferencia de fecha (salto extremo): {res['dif_dias']} días (Error de digitación/mes?).")
+                    else:
+                        estado_final = 'Diferencia de fecha'
+                        partes_comentario.append(f"Diferencia de fecha: F40 vs F50 difieren {res['dif_dias']} día(s) (tope {TOPE_DIAS_ALERTA}).")
                 elif res['dif_valor'] and res['dif_valor'] > 0:
                     estado_final = 'Diferencia de valor'
                     partes_comentario.append(
                         f"Diferencia de valor: dif=${res['dif_valor']:,.0f} ({res['pct_valor']*100:.2f}%). "
-                        f"{'Dentro del tope' if res['dif_valor'] <= tol_valor_purpura else 'EXCEDE el tope sugerido'}."
+                        f"{'Dentro del tope de $' + str(int(tol_valor_purpura)) if res['dif_valor'] <= tol_valor_purpura else 'EXCEDE el tope sugerido de $' + str(int(tol_valor_purpura)) + ', revisar con prioridad'}."
                     )
                 else:
                     estado_final = 'Conciliado - Cumple todas las reglas'
@@ -419,11 +418,11 @@ if archivo_subido is not None:
                 comentario_final = " ".join(partes_comentario)
 
                 for idx in (id40, id50):
-                    # FIX CLAVE: forzar=True permite sobrescribir los estados de "Sugerencia - Regla 8 Nequi" 
-                    # si las reglas duras (Regla 1, Regla 6, Excepción Nequi) confirman el emparejamiento.
+                    # FIX: forzar=True permite sobrescribir los estados de "Sugerencia - Regla 8 Nequi" 
+                    # si una regla fuerte posterior confirma el emparejamiento.
                     escribir_estado([idx], estado_final, forzar=True)
                     escribir_candidatos(idx, texto_candidatos)
-                    # Usar append=False limpia los comentarios residuales de las sugerencias grupales fallidas.
+                    # Usar append=False limpia los comentarios residuales de sugerencias pasadas
                     escribir_comentario(idx, comentario_final, append=False)
 
                 return True, estado_final
@@ -525,14 +524,14 @@ if archivo_subido is not None:
                             elif len(match_importe) > 1:
                                 escribir_estado([fila_ip['ID_Linea']], 'Sugerencia - IP por Zona (varios candidatos)', forzar=False)
                                 escribir_candidatos(fila_ip['ID_Linea'], f"Zona {sector_z}: candidatos CB con mismo importe: {docs_candidatos}")
-                                escribir_comentario(fila_ip['ID_Linea'], f"IP con misma Zona ({sector_z}) pero varios CB candidatos con el mismo importe exacto: requiere revisión manual.", append=False)
+                                escribir_comentario(fila_ip['ID_Linea'], f"IP con misma Zona ({sector_z}) pero varios CB candidatos con el mismo importe exacto.", append=False)
 
                 ip_sin_resolver = df[(df[col_C].astype(str).str.upper() == 'IP') & (~df['ID_Linea'].isin(usados))]
                 for idl in ip_sin_resolver['ID_Linea']:
-                    escribir_comentario(idl, "PDV (IP): requiere referencia homologada de base de datos o coincidencia por Zona (Regla 9) para conciliar. Sin coincidencia por ahora.", append=False)
+                    escribir_comentario(idl, "PDV (IP): requiere referencia homologada de base de datos o coincidencia por Zona (Regla 9).", append=False)
 
             # =====================================================
-            # 5B. REGLA 8 — NEQUI POR TOTALES Y FIFO
+            # 5B. REGLA 8 — NEQUI POR TOTALES Y FIFO (sección 11 de la guía)
             # =====================================================
             ind_nequi8_azul = set()
             ind_nequi8_sugerencia = set()
@@ -598,14 +597,12 @@ if archivo_subido is not None:
 
             # =====================================================
             # 6. REGLA 1 — A debe coincidir con H (exacto)
+            # FIX: Se remueve filtro que bloqueaba a IP, permitiendo cruces 1a1
             # =====================================================
             df_40 = df[(df[col_G] == '40')].copy()
             df_50 = df[(df[col_G] == '50')].copy()
-            if usar_ipcb:
-                df_40 = df_40[df_40[col_C].astype(str).str.upper() != 'IP']
-                df_50 = df_50[df_50[col_C].astype(str).str.upper() != 'IP']
 
-            def emparejar_1a1_por_llave(sub40, sub50, llave40, llave50, base_txt, exigir_importe_exacto_estricto=True):
+            def emparejar_1a1_por_llave(sub40, sub50, llave40, llave50, base_txt):
                 s40 = sub40[~sub40['ID_Linea'].isin(usados)].copy()
                 s50 = sub50[~sub50['ID_Linea'].isin(usados)].copy()
                 if s40.empty or s50.empty:
@@ -639,6 +636,39 @@ if archivo_subido is not None:
             )
 
             # =====================================================
+            # 6.2 REGLA 1 FLEX: RELACION PARCIAL LIMPIA (Fuerza fecha)
+            # Resuelve Ej: A="T-9006235207" contiene a H="900623520"
+            # =====================================================
+            def emparejar_parcial_limpia(sub40, sub50, base_txt):
+                s40 = sub40[~sub40['ID_Linea'].isin(usados)].copy()
+                s50 = sub50[~sub50['ID_Linea'].isin(usados)].copy()
+                if s40.empty or s50.empty: return
+                for _, r40 in s40.iterrows():
+                    id40 = r40['ID_Linea']
+                    if id40 in usados: continue
+                    cands = s50[(~s50['ID_Linea'].isin(usados)) & (s50[col_banco] == r40[col_banco]) & (s50['Abs_I'] == r40['Abs_I'])]
+                    if cands.empty: continue
+                    a_str = str(r40['A_Limpia']).strip()
+                    if len(a_str) < 6: continue
+                    
+                    for _, r50 in cands.iterrows():
+                        id50 = r50['ID_Linea']
+                        if id50 in usados: continue
+                        h_str = str(r50['H_Limpia']).strip()
+                        if len(h_str) < 6: continue
+                        
+                        if (a_str in h_str) or (h_str in a_str):
+                            # Se perdona la tolerancia de fecha por certeza de código de referencia (max_dias = 999)
+                            ok, _ = clasificar_y_registrar(id40, id50, base_txt, max_dias=999)
+                            if ok:
+                                usados.update([id40, id50])
+                                break
+            
+            df_40 = df_40[~df_40['ID_Linea'].isin(usados)]
+            df_50 = df_50[~df_50['ID_Linea'].isin(usados)]
+            emparejar_parcial_limpia(df_40, df_50, "Regla 1 (Flex): La asignación se relaciona estrechamente con la Referencia.")
+
+            # =====================================================
             # 6.5 REGLA 6 EXPLÍCITA — RECLASIFICACIÓN DE BANCO
             # =====================================================
             df_40 = df_40[~df_40['ID_Linea'].isin(usados)]
@@ -662,7 +692,7 @@ if archivo_subido is not None:
                     ra = df.loc[df['ID_Linea'] == id40].iloc[0]
                     rb = df.loc[df['ID_Linea'] == id50].iloc[0]
                     if str(ra[col_banco]).strip() == str(rb[col_banco]).strip():
-                        continue 
+                        continue  # esto ya lo cubrió Regla 1; aquí solo nos interesa banco distinto
                     ok, estado_final = clasificar_y_registrar(id40, id50, base_txt)
                     if ok:
                         usados.update([id40, id50])
@@ -680,6 +710,7 @@ if archivo_subido is not None:
 
             # =====================================================
             # 7. REGLA 2 — SECTORIZACIÓN (cuando A != H)
+            # FIX: Permite el cruce FIFO si hay múltiples registros en misma fecha (sin ambigüedad que bloquee)
             # =====================================================
             df_40 = df_40[~df_40['ID_Linea'].isin(usados)]
             df_50 = df_50[~df_50['ID_Linea'].isin(usados)]
@@ -695,41 +726,23 @@ if archivo_subido is not None:
                     ]
                     if sub50.empty:
                         continue
+                    
                     s40_ord = sub40[~sub40['ID_Linea'].isin(usados)].sort_values('Fecha_F')
                     s50_ord = sub50[~sub50['ID_Linea'].isin(usados)].sort_values('Fecha_F')
                     if s40_ord.empty or s50_ord.empty:
                         continue
 
+                    # Se eliminó la validación "es_unico_sin_ambiguedad". Ahora empareja directo por orden.
                     n_pares = min(len(s40_ord), len(s50_ord))
-                    es_unico_sin_ambiguedad = (len(s40_ord) == 1 and len(s50_ord) == 1)
                     for i in range(n_pares):
                         r40, r50 = s40_ord.iloc[i], s50_ord.iloc[i]
                         id40, id50 = r40['ID_Linea'], r50['ID_Linea']
                         if id40 in usados or id50 in usados:
                             continue
-                        res = gate_seguridad(id40, id50, exigir_importe_exacto=True, tolerancia_valor=0)
-                        if not res['ok']:
-                            continue
-                        texto_cand = f"{formato_linea(id40)} | {formato_linea(id50)}"
-                        dif_txt = f" (F difiere {res['dif_dias']} día(s))" if res['dif_dias'] else ""
-                        if es_unico_sin_ambiguedad:
-                            estado = f"Conciliado - Sectorización (candidato único, {sector})"
-                            comentario = (
-                                f"Conciliado por sectorización '{sector}': único candidato en banco+fecha+importe "
-                                f"exacto de cada lado, sin ambigüedad{dif_txt}."
-                            )
-                        else:
-                            estado = f"Sugerencia - Sectorización ({sector})"
-                            comentario = (
-                                f"Sugerencia por sectorización '{sector}': Asignación NO coincide exacta con "
-                                f"Referencia, pero el sector sí. Requiere verificación manual de Referencia{dif_txt}."
-                            )
-                        for idx in (id40, id50):
-                            df.loc[df['ID_Linea'] == idx, 'Estado_Conciliacion'] = estado
-                            df.loc[df['ID_Linea'] == idx, 'Candidatos_Conciliacion'] = texto_cand
-                            df.loc[df['ID_Linea'] == idx, 'Comentario'] = comentario
-                        usados.update([id40, id50])
+                        ok, _ = clasificar_y_registrar(id40, id50, f"Sectorización ({sector})")
+                        if ok: usados.update([id40, id50])
 
+                    # Sobrantes desbalanceados -> listar candidatos (Regla 4)
                     rem40 = s40_ord[~s40_ord['ID_Linea'].isin(usados)]
                     rem50 = s50_ord[~s50_ord['ID_Linea'].isin(usados)]
                     if not rem40.empty or not rem50.empty:
@@ -745,10 +758,36 @@ if archivo_subido is not None:
                             df.loc[df['ID_Linea'] == r['ID_Linea'], 'Comentario'] = f"Sector '{sector}' desbalanceado ({len(rem50)} vs {len(rem40)}). Débitos candidatos: {docs40_txt}"
 
             # =====================================================
-            # 8. EXCEPCIÓN NEQUI (A = "Nequi", C = DZ) REESCRITA
-            #    Ahora evalúa tolerancia de días (Regla 7) y
-            #    cruza automáticamente casos ambiguos (ej. 2 de 100k
-            #    contra 2 de 100k) asignándolos 1 a 1 por FIFO interno.
+            # 7B. SUGERENCIA SECTORIZACIÓN CON DIFERENCIA DE VALOR 
+            # (Ej. Alerta faltante 50.000 u otras diferencias que comparten sector y fecha)
+            # =====================================================
+            rem40_sect = d40_sect[~d40_sect['ID_Linea'].isin(usados)]
+            rem50_sect = d50_sect[~d50_sect['ID_Linea'].isin(usados)]
+
+            if not rem40_sect.empty and not rem50_sect.empty:
+                for (b, f, sec), g40 in rem40_sect.groupby([col_banco, 'Fecha_F', 'Sector']):
+                    g50 = rem50_sect[(rem50_sect[col_banco] == b) & (rem50_sect['Fecha_F'] == f) & (rem50_sect['Sector'] == sec)]
+                    if g50.empty: continue
+                    
+                    for _, r40 in g40.iterrows():
+                        id40 = r40['ID_Linea']
+                        if id40 in usados: continue
+                        g50_disp = g50[~g50['ID_Linea'].isin(usados)].copy()
+                        if g50_disp.empty: continue
+                        
+                        g50_disp['_dif'] = (g50_disp['Abs_I'] - r40['Abs_I']).abs()
+                        best_50 = g50_disp.sort_values('_dif').head(3)
+                        
+                        if not best_50.empty:
+                            docs50_txt = resumen_docs(best_50)
+                            dif_min = best_50.iloc[0]['_dif']
+                            df.loc[df['ID_Linea'] == id40, 'Estado_Conciliacion'] = f"Sugerencia - Sectorización dif. valor"
+                            df.loc[df['ID_Linea'] == id40, 'Candidatos_Conciliacion'] = f"{formato_linea(id40)} | Candidatos posibles: {docs50_txt}"
+                            df.loc[df['ID_Linea'] == id40, 'Comentario'] = f"Alerta Sector '{sec}': misma fecha pero difiere en valor (dif aprox ${dif_min:,.0f}). Candidatos: {docs50_txt}"
+
+            # =====================================================
+            # 8. EXCEPCIÓN NEQUI (A = "Nequi", C = DZ)
+            # FIX: Evalúa tolerancia de días ampliada y empareja directo sin ambigüedad restrictiva
             # =====================================================
             df_40 = df_40[~df_40['ID_Linea'].isin(usados)]
             df_50 = df_50[~df_50['ID_Linea'].isin(usados)]
@@ -759,26 +798,13 @@ if archivo_subido is not None:
                 id40 = r40['ID_Linea']
                 if id40 in usados:
                     continue
-                
-                # Buscar candidatos en mismo banco que no hayan sido usados
                 candidatos = df_50[
                     (df_50[col_banco] == r40[col_banco]) &
                     (~df_50['ID_Linea'].isin(usados))
                 ].copy()
-                
                 if candidatos.empty:
                     continue
 
-                # Aplicar la tolerancia de fechas (TOPE_DIAS_ALERTA)
-                candidatos['_dif_dias'] = candidatos['Fecha_F'].apply(
-                    lambda f: abs((f - r40['Fecha_F']).days) if pd.notna(f) and pd.notna(r40['Fecha_F']) else 999
-                )
-                candidatos = candidatos[candidatos['_dif_dias'] <= TOPE_DIAS_ALERTA]
-                
-                if candidatos.empty:
-                    continue
-
-                # Filtrar por sector coherente si aplica
                 if r40['Sector'] != 'Sin clasificar':
                     cf = candidatos[
                         (candidatos['Sector'] == r40['Sector']) | (candidatos['Sector'] == 'Sin clasificar')
@@ -786,28 +812,28 @@ if archivo_subido is not None:
                     if not cf.empty:
                         candidatos = cf
 
-                # 1. Buscar candidatos con importe EXACTO (ordenados por el mejor cruce de fecha)
+                candidatos['_dif_dias'] = candidatos['Fecha_F'].apply(
+                    lambda x: abs((x - r40['Fecha_F']).days) if pd.notna(x) and pd.notna(r40['Fecha_F']) else 999
+                )
+                
+                # Importes exactos (Flexibilidad de fechas infinita para asegurar el Nequi)
                 exactos = candidatos[candidatos['Abs_I'] == r40['Abs_I']].sort_values('_dif_dias')
                 if not exactos.empty:
-                    # Toma automáticamente el mejor candidato disponible 
-                    # (resuelve el error 2v2 donde antes arrojaba 'ambigüedad')
                     id50 = exactos.iloc[0]['ID_Linea']
-                    ok, estado_final = clasificar_y_registrar(id40, id50, "Excepción Nequi (cruce importe exacto)")
-                    if ok:
-                        usados.update([id40, id50])
+                    ok, _ = clasificar_y_registrar(id40, id50, "Excepción Nequi (cruce importe exacto)", max_dias=999)
+                    if ok: usados.update([id40, id50])
                     continue
-
-                # 2. Si no hay exacto, buscar dentro de tolerancia de valor (Morado)
+                    
+                # Si no hay exacto único, buscar dentro de tolerancia $500 (Regla morada)
                 candidatos['_dif_val'] = (candidatos['Abs_I'] - r40['Abs_I']).abs()
                 con_tol = candidatos[candidatos['_dif_val'] <= tol_valor_purpura].sort_values(['_dif_val', '_dif_dias'])
+                # Mantenemos tolerancia salmón para este cruce indirecto
+                con_tol = con_tol[con_tol['_dif_dias'] <= TOPE_DIAS_ALERTA]
                 if not con_tol.empty:
                     id50 = con_tol.iloc[0]['ID_Linea']
-                    ok, estado_final = clasificar_y_registrar(id40, id50, "Excepción Nequi (con diferencia de valor)")
-                    if ok:
-                        usados.update([id40, id50])
+                    ok, _ = clasificar_y_registrar(id40, id50, "Excepción Nequi (con diferencia de valor)")
+                    if ok: usados.update([id40, id50])
                     continue
-                
-                # Si llega aquí es que no hubo ningún match válido bajo los topes
 
             # =====================================================
             # 9. REGLA 4 — DOCUMENTOS DZ CON POSICIONES MÚLTIPLES
@@ -861,8 +887,8 @@ if archivo_subido is not None:
             df_40 = df_40[~df_40['ID_Linea'].isin(usados)]
             df_50 = df_50[~df_50['ID_Linea'].isin(usados)]
 
-            # A diferencia de la v24, ahora sí se permite que procese filas con 'Sugerencia' 
-            # para atrapar grupos Nequi sobrantes, SI Y SOLO SI cruzan con las llaves exactas.
+            # A diferencia de la v24, permitimos que el FIFO analice filas que tienen 
+            # alertas pasadas o sugerencias, SI Y SOLO SI no están cruzadas (no usadas).
             pendientes_40 = df[
                 (df['ID_Linea'].isin(df_40['ID_Linea'])) &
                 (~df['ID_Linea'].isin(usados))
@@ -896,6 +922,7 @@ if archivo_subido is not None:
                     ind_fifo_ok.update([id40, id50])
                     usados.update([id40, id50])
 
+                # Sobrantes DZ con B repetido y sin pareja -> Regla verde
                 sobrantes40 = s40_ord[~s40_ord['ID_Linea'].isin(usados)]
                 for _, fila in sobrantes40.iterrows():
                     idl = fila['ID_Linea']
@@ -940,11 +967,13 @@ if archivo_subido is not None:
                     return [f'background-color: {COLOR_BLANCO}; color: black'] * len(row)
                 if 'reclasificación' in est:
                     return [f'background-color: {COLOR_DURAZNO}; color: black'] * len(row)
+                if 'diferencia de fecha extrema' in est:
+                    return [f'background-color: {COLOR_SALMON}; color: black'] * len(row)
                 if 'diferencia de fecha' in est:
                     return [f'background-color: {COLOR_SALMON}; color: black'] * len(row)
                 if 'diferencia de valor' in est:
                     return [f'background-color: {COLOR_MORADO}; color: black'] * len(row)
-                if 'dz multiposición' in est or 'dz posiciones múltiples' in est:
+                if 'dz multiposición' in est or 'dz posiciones múltiples' in est or 'sectorización dif' in est:
                     return [f'background-color: {COLOR_VERDE}; color: black'] * len(row)
                 if 'conciliado' in est:
                     return [f'background-color: {COLOR_AZUL}; color: black'] * len(row)
@@ -997,7 +1026,7 @@ if archivo_subido is not None:
                 total_filas = len(df_final)
                 total_azul = int(df_final['Estado_Conciliacion'].str.contains('Conciliado', na=False).sum())
                 total_verde = int(
-                    df_final['Estado_Conciliacion'].str.contains('DZ multiposición|DZ posiciones múltiples', na=False, regex=True).sum()
+                    df_final['Estado_Conciliacion'].str.contains('DZ multiposición|DZ posiciones múltiples|Sectorización dif', na=False, regex=True).sum()
                 )
                 total_salmon = int(df_final['Estado_Conciliacion'].str.contains('Diferencia de fecha', na=False).sum())
                 total_morado = int(df_final['Estado_Conciliacion'].str.contains('Diferencia de valor', na=False).sum())
@@ -1008,7 +1037,7 @@ if archivo_subido is not None:
                     "Métrica": [
                         "Fecha de procesamiento", "Total filas procesadas",
                         "Azul - Conciliado (todas las reglas)",
-                        "Verde - Regla verde estricta (DZ B repetido, posición fallida)",
+                        "Verde - Sugerencias (DZ múltiples / Sectorización Valor)",
                         "Salmón - Diferencia de fecha (Regla 7)",
                         "Morado - Diferencia de valor máx $500 (Regla morado)",
                         "Durazno - Reclasificación de banco (Regla 6)",
@@ -1032,7 +1061,7 @@ if archivo_subido is not None:
                 pestanas_usadas.add('RESUMEN')
 
                 df_nov = df_final[df_final[col_G] == '40'].copy()
-                estados_alerta = ['Diferencia de fecha', 'Diferencia de valor', 'Reclasificación de banco']
+                estados_alerta = ['Diferencia de fecha', 'Diferencia de fecha extrema', 'Diferencia de valor', 'Reclasificación de banco']
                 mask_alerta = df_nov['Estado_Conciliacion'].isin(estados_alerta)
                 mask_sin_candidato = df_nov['Candidatos_Conciliacion'].astype(str).str.strip().isin(['', 'nan', 'None'])
                 df_nov = df_nov[mask_alerta | mask_sin_candidato]
@@ -1096,7 +1125,7 @@ if archivo_subido is not None:
             st.download_button(
                 label="📥 Descargar Excel con Resultados",
                 data=output.getvalue(),
-                file_name="Conciliacion_CLM_v25_actualizado.xlsx",
+                file_name="Conciliacion_CLM_v25.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 
