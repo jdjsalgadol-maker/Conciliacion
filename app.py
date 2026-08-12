@@ -448,9 +448,13 @@ if archivo_subido is not None:
                 df_cb = df[(df[col_C].astype(str).str.upper() == 'CB') & (df[col_G] == '50') & df['Ref_H_Homologada'].notna()]
 
                 if not df_ip.empty and not df_cb.empty:
-                    grp_ip = df_ip.groupby([col_banco, 'Ref_H_Homologada'])['Abs_I'].sum().reset_index(name='S_IP')
-                    grp_cb = df_cb.groupby([col_banco, 'Ref_H_Homologada'])['Abs_I'].sum().reset_index(name='S_CB')
-                    m = pd.merge(grp_cb, grp_ip, on=[col_banco, 'Ref_H_Homologada'])
+                    # FIX: se agrega col_F (Fecha valor) a la agrupación. Antes se
+                    # sumaban TODOS los IP y CB de una referencia homologada sin
+                    # importar la fecha, lo que podía mezclar operaciones de días
+                    # distintos. La Fecha valor debe ser SIEMPRE una restricción.
+                    grp_ip = df_ip.groupby([col_banco, col_F, 'Ref_H_Homologada'])['Abs_I'].sum().reset_index(name='S_IP')
+                    grp_cb = df_cb.groupby([col_banco, col_F, 'Ref_H_Homologada'])['Abs_I'].sum().reset_index(name='S_CB')
+                    m = pd.merge(grp_cb, grp_ip, on=[col_banco, col_F, 'Ref_H_Homologada'])
                     m['DifV'] = (m['S_CB'] - m['S_IP']).abs()
                     max_s = m[['S_CB', 'S_IP']].max(axis=1).clip(lower=1)
                     m['Pct'] = m['DifV'] / max_s
@@ -459,9 +463,9 @@ if archivo_subido is not None:
                     con_tol = m[(m['DifV'] > 0) & ((m['DifV'] <= tol_valor_abs_general) | (m['Pct'] <= tol_valor_pct_general))]
 
                     def procesar_grupo_ip(fila, es_exacto):
-                        b, rh = fila[col_banco], fila['Ref_H_Homologada']
-                        sub_ip = df_ip[(df_ip[col_banco] == b) & (df_ip['Ref_H_Homologada'] == rh)]
-                        sub_cb = df_cb[(df_cb[col_banco] == b) & (df_cb['Ref_H_Homologada'] == rh)]
+                        b, f_val, rh = fila[col_banco], fila[col_F], fila['Ref_H_Homologada']
+                        sub_ip = df_ip[(df_ip[col_banco] == b) & (df_ip[col_F] == f_val) & (df_ip['Ref_H_Homologada'] == rh)]
+                        sub_cb = df_cb[(df_cb[col_banco] == b) & (df_cb[col_F] == f_val) & (df_cb['Ref_H_Homologada'] == rh)]
                         ip_ids = [i for i in sub_ip['ID_Linea'].tolist() if i not in usados]
                         cb_ids = [i for i in sub_cb['ID_Linea'].tolist() if i not in usados]
                         if not ip_ids or not cb_ids: return
@@ -470,11 +474,11 @@ if archivo_subido is not None:
                         if es_exacto:
                             estado = 'Conciliado - Cruce múltiple IP/CB (Regla 3)'
                             ind_ip_exacto.update(ip_ids + cb_ids)
-                            txt = f"Cruce múltiple homologado ({len(ip_ids)} IP = {len(cb_ids)} CB). Ref. homologada: {rh}."
+                            txt = f"Cruce múltiple homologado ({len(ip_ids)} IP = {len(cb_ids)} CB), misma Fecha valor ({f_val}). Ref. homologada: {rh}."
                         else:
                             estado = 'Sugerencia - Cruce múltiple IP/CB con diferencia de valor'
                             ind_ip_tolerancia.update(ip_ids + cb_ids)
-                            txt = f"Sugerencia IP/CB con diferencia de valor (${fila['DifV']:,.0f} / {fila['Pct']*100:.2f}%). Suma {len(ip_ids)} IP vs {len(cb_ids)} CB. Ref. homologada: {rh}."
+                            txt = f"Sugerencia IP/CB con diferencia de valor (${fila['DifV']:,.0f} / {fila['Pct']*100:.2f}%), misma Fecha valor ({f_val}). Suma {len(ip_ids)} IP vs {len(cb_ids)} CB. Ref. homologada: {rh}."
                         for idx in ip_ids + cb_ids:
                             df.loc[df['ID_Linea'] == idx, 'Estado_Conciliacion'] = estado
                             df.loc[df['ID_Linea'] == idx, 'Candidatos_Conciliacion'] = texto_cand
@@ -827,6 +831,75 @@ if archivo_subido is not None:
                         df.loc[df['ID_Linea'] == idl, 'Estado_Conciliacion'] = 'Sugerencia - DZ multiposición sin cruce (verificar)'
                         df.loc[df['ID_Linea'] == idl, 'Comentario'] = f"Documento {int(fila[col_B])} tiene varias posiciones y ésta no encontró pareja exacta."
                         ind_fifo_verde_dz.add(idl)
+
+            # ================================================================
+            # 10B. REGLA 6B — RECLASIFICACIÓN SIN REFERENCIA (último recurso)
+            #     Cuando nada más pudo conectar un DZ y un CB (ni A=H, ni
+            #     Sector, ni Nequi, ni FIFO intra-banco), pero comparten
+            #     EXACTAMENTE la misma Fecha valor y el mismo importe a la
+            #     peseta en bancos DISTINTOS, eso es evidencia fuerte de que
+            #     la operación quedó registrada en el banco equivocado.
+            #     Solo se marca "Reclasificación de banco" si es el ÚNICO
+            #     candidato posible para esa Fecha+Importe en TODO el
+            #     archivo (sin importar el banco). Si hay más de uno, se
+            #     deja como sugerencia con la lista de candidatos, nunca
+            #     se fuerza a ciegas.
+            # ================================================================
+            df_40 = df_40[~df_40['ID_Linea'].isin(usados)]
+            df_50 = df_50[~df_50['ID_Linea'].isin(usados)]
+            pendientes_40b = df[(df['ID_Linea'].isin(df_40['ID_Linea'])) & (~df['ID_Linea'].isin(usados))]
+            pendientes_50b = df[(df['ID_Linea'].isin(df_50['ID_Linea'])) & (~df['ID_Linea'].isin(usados))]
+
+            for (fecha_z, importe_z), grupo40 in pendientes_40b.groupby([col_F, 'Abs_I']):
+                grupo40 = grupo40[~grupo40['ID_Linea'].isin(usados)]
+                if grupo40.empty:
+                    continue
+                grupo50 = pendientes_50b[
+                    (pendientes_50b[col_F] == fecha_z) & (pendientes_50b['Abs_I'] == importe_z) &
+                    (~pendientes_50b['ID_Linea'].isin(usados))
+                ]
+                if grupo50.empty:
+                    continue
+
+                if len(grupo40) == 1 and len(grupo50) == 1:
+                    id40 = grupo40.iloc[0]['ID_Linea']
+                    id50 = grupo50.iloc[0]['ID_Linea']
+                    ra = df.loc[df['ID_Linea'] == id40].iloc[0]
+                    rb = df.loc[df['ID_Linea'] == id50].iloc[0]
+                    texto_cand = f"{formato_linea(id40)} | {formato_linea(id50)}"
+                    if str(ra[col_banco]).strip() == str(rb[col_banco]).strip():
+                        # Mismo banco: si llegó hasta aquí es porque el Sector no
+                        # coincidía (si no, el FIFO controlado ya lo habría tomado).
+                        # No es reclasificación de banco; se deja como sugerencia
+                        # simple, sin forzar el color durazno.
+                        estado = 'Sugerencia - Cruce único sin referencia (sector no coincide)'
+                        comentario = ("Único candidato en Fecha valor + importe exactos, mismo "
+                                      "banco, pero el Sector no coincide o no está clasificado.")
+                    else:
+                        estado = 'Reclasificación de banco'
+                        comentario = (
+                            f"Regla 6B: sin coincidencia de Asignación/Referencia ni de Sector, "
+                            f"pero es el ÚNICO candidato con la misma Fecha valor e importe exacto "
+                            f"(${importe_z:,.0f}). Registrado en '{ra[col_banco]}'; banco esperado "
+                            f"'{rb[col_banco]}'."
+                        )
+                    for idx in (id40, id50):
+                        df.loc[df['ID_Linea'] == idx, 'Estado_Conciliacion'] = estado
+                        df.loc[df['ID_Linea'] == idx, 'Candidatos_Conciliacion'] = texto_cand
+                        df.loc[df['ID_Linea'] == idx, 'Comentario'] = comentario
+                    usados.update([id40, id50])
+                else:
+                    docs40_txt = resumen_docs(grupo40)
+                    docs50_txt = resumen_docs(grupo50)
+                    for _, r in grupo40.iterrows():
+                        df.loc[df['ID_Linea'] == r['ID_Linea'], 'Estado_Conciliacion'] = 'Sugerencia - Reclasificación con múltiples candidatos'
+                        df.loc[df['ID_Linea'] == r['ID_Linea'], 'Candidatos_Conciliacion'] = f"{formato_linea(r['ID_Linea'])} | Candidatos posibles: {docs50_txt}"
+                        df.loc[df['ID_Linea'] == r['ID_Linea'], 'Comentario'] = f"Fecha+importe exactos (${importe_z:,.0f}) con varios candidatos en distintos bancos: {docs50_txt}"
+                    for _, r in grupo50.iterrows():
+                        df.loc[df['ID_Linea'] == r['ID_Linea'], 'Estado_Conciliacion'] = 'Sugerencia - Reclasificación con múltiples candidatos'
+                        df.loc[df['ID_Linea'] == r['ID_Linea'], 'Candidatos_Conciliacion'] = f"{formato_linea(r['ID_Linea'])} | Candidatos posibles: {docs40_txt}"
+                        df.loc[df['ID_Linea'] == r['ID_Linea'], 'Comentario'] = f"Fecha+importe exactos (${importe_z:,.0f}) con varios candidatos en distintos bancos: {docs40_txt}"
+
 
             # ================================================================
             # 7. PARCHE v33: VALIDACION FINAL DE FECHA (Muro de Contencion)
