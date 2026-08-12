@@ -141,7 +141,7 @@ if archivo_subido is not None:
             filas_excluidas = filas_antes - len(df)
 
             df = df.sort_values(by=[col_B], ascending=True).reset_index(drop=True)
-            df['ID_Linea'] = df.index  # identificador único por LINEA (no por documento)
+            df['ID_Linea'] = df.index  
 
             df[col_G] = df[col_G].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
             df[col_banco] = df[col_banco].astype(str).str.strip()
@@ -158,9 +158,9 @@ if archivo_subido is not None:
             else:
                 df['Periodo_D'] = 'SIN_FECHA_D'
 
-            df['Estado_Conciliacion'] = 'Pendiente'   # columna M
+            df['Estado_Conciliacion'] = 'Pendiente'   
             df['Comentario'] = ''
-            df['Candidatos_Conciliacion'] = ''        # columna O
+            df['Candidatos_Conciliacion'] = ''        
 
             # Posiciones repetidas del mismo B (Regla 4)
             df['B_Repite'] = df.groupby(col_B)[col_B].transform('count') > 1
@@ -277,7 +277,7 @@ if archivo_subido is not None:
             # FUNCIONES AUXILIARES & PARCHE V33
             # =====================================================
             usados = set()
-            parejas_registradas = []  # Para validacion final estricta de 4 dias
+            parejas_registradas = []  
 
             def formato_linea(idl):
                 r = df.loc[df['ID_Linea'] == idl].iloc[0]
@@ -344,13 +344,8 @@ if archivo_subido is not None:
 
             def gate_seguridad(id40, id50, exigir_importe_exacto=True, tolerancia_valor=None):
                 """
-                Verifica reglas transversales:
-                - Regla general: Fecha F debe coincidir EXACTO para 'ok_total'.
-                  Si difiere <= TOPE_DIAS_ALERTA -> ok_con_alerta_fecha=True.
-                  Si difiere más -> BLOQUEADO ESTRICTO (Parche v33).
-                - Banco debe coincidir; si no, se marca ok_banco=False (Regla 6).
-                - Sector: si ambos lados tienen sector clasificado y son distintos -> bloqueado.
-                - Importe: exacto o con diferencia <= tolerancia_valor.
+                Verifica reglas transversales.
+                - Si difiere de fecha > TOPE_DIAS_ALERTA -> BLOQUEADO ESTRICTO.
                 """
                 ra = df.loc[df['ID_Linea'] == id40].iloc[0]
                 rb = df.loc[df['ID_Linea'] == id50].iloc[0]
@@ -370,7 +365,6 @@ if archivo_subido is not None:
                 dif_dias = abs((fa - fb).days)
                 resultado['dif_dias'] = dif_dias
                 
-                # PARCHE V33: Nunca cruzar si excede el limite de dias.
                 if dif_dias > TOPE_DIAS_ALERTA:
                     resultado['motivo'] = f"Diferencia de fecha F fuera de rango: {dif_dias} dias > {TOPE_DIAS_ALERTA}"
                     return resultado
@@ -435,14 +429,12 @@ if archivo_subido is not None:
                 comentario_final = " ".join(partes_comentario)
 
                 for idx in (id40, id50):
-                    # PARCHE: forzar=True permite sobreescribir sugerencias grupales previas
                     escribir_estado([idx], estado_final, forzar=True)
                     escribir_candidatos(idx, texto_candidatos)
                     escribir_comentario(idx, comentario_final, append=False)
                 
                 parejas_registradas.append((id40, id50))
                 return True, estado_final
-
 
             # =====================================================
             # Regla 3: IP Homologados Grouped
@@ -808,6 +800,9 @@ if archivo_subido is not None:
             pendientes_40 = df[(df['ID_Linea'].isin(df_40['ID_Linea'])) & (df['Estado_Conciliacion'] == 'Pendiente') & (df['Comentario'] == '') & (df['Candidatos_Conciliacion'] == '')]
             pendientes_50 = df[(df['ID_Linea'].isin(df_50['ID_Linea'])) & (df['Estado_Conciliacion'] == 'Pendiente') & (df['Comentario'] == '') & (df['Candidatos_Conciliacion'] == '')]
 
+            ind_fifo_ok = set()
+            ind_fifo_verde_dz = set()
+
             for grp, sub40 in pendientes_40.groupby([col_banco, 'Abs_I', col_F, 'Sector']):
                 b, imp, f, sector = grp
                 sub50 = pendientes_50[(pendientes_50[col_banco] == b) & (pendientes_50['Abs_I'] == imp) & (pendientes_50[col_F] == f) & (pendientes_50['Sector'] == sector)]
@@ -823,6 +818,7 @@ if archivo_subido is not None:
                         df.loc[df['ID_Linea'] == idx, 'Candidatos_Conciliacion'] = texto_cand
                         df.loc[df['ID_Linea'] == idx, 'Comentario'] = 'Emparejado por FIFO controlado: misma fecha F, mismo sector, banco e importe.'
                     usados.update([id40, id50])
+                    ind_fifo_ok.update([id40, id50])
 
                 sobrantes40 = s40_ord[~s40_ord['ID_Linea'].isin(usados)]
                 for _, fila in sobrantes40.iterrows():
@@ -830,6 +826,7 @@ if archivo_subido is not None:
                     if bool(fila['B_Repite']):
                         df.loc[df['ID_Linea'] == idl, 'Estado_Conciliacion'] = 'Sugerencia - DZ multiposición sin cruce (verificar)'
                         df.loc[df['ID_Linea'] == idl, 'Comentario'] = f"Documento {int(fila[col_B])} tiene varias posiciones y ésta no encontró pareja exacta."
+                        ind_fifo_verde_dz.add(idl)
 
             # ================================================================
             # 7. PARCHE v33: VALIDACION FINAL DE FECHA (Muro de Contencion)
