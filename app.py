@@ -1117,8 +1117,18 @@ if archivo_subido is not None:
                 resumen.to_excel(writer, index=False, sheet_name='RESUMEN')
                 pestanas_usadas.add('RESUMEN')
 
-                df_nov = df_final[~df_final['Estado_Conciliacion'].str.startswith('Conciliado', na=False)].copy()
-                df_nov = df_nov[df_nov[col_G] == '40']
+                # NOVEDADES_Y_PENDIENTES_40: por pedido explícito, esta pestaña
+                # ya NO incluye todas las "Sugerencia" (sectorización, Regla 8
+                # Nequi, DZ posiciones múltiples, IP/CB, IP por zona, etc.) --
+                # esas ya tienen su candidato listado en Candidatos_Conciliacion
+                # y se revisan directamente en la hoja del banco. Aquí solo van
+                # las 3 alertas puntuales (fecha, valor, reclasificación de
+                # banco) y las filas de clave 40 que no tienen NINGÚN candidato.
+                df_nov = df_final[df_final[col_G] == '40'].copy()
+                estados_alerta = ['Diferencia de fecha', 'Diferencia de valor', 'Reclasificación de banco']
+                mask_alerta = df_nov['Estado_Conciliacion'].isin(estados_alerta)
+                mask_sin_candidato = df_nov['Candidatos_Conciliacion'].astype(str).str.strip().isin(['', 'nan', 'None'])
+                df_nov = df_nov[mask_alerta | mask_sin_candidato]
                 if not df_nov.empty:
                     df_nov = df_nov.sort_values(by=['Estado_Conciliacion', col_I])
                     hoja_segura(writer, vista(df_nov), 'NOVEDADES_Y_PENDIENTES_40', estilo=True)
