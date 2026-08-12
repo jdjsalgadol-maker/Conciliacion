@@ -749,6 +749,11 @@ if archivo_subido is not None:
                         continue
 
                     n_pares = min(len(s40_ord), len(s50_ord))
+                    # Si el grupo tiene EXACTAMENTE 1 candidato de cada lado, no hay
+                    # ninguna ambigüedad real que verificar manualmente -> se concilia
+                    # directo (azul). Si hay varios candidatos y se debe desempatar por
+                    # FIFO, ahí sí se deja como Sugerencia para revisión manual.
+                    es_unico_sin_ambiguedad = (len(s40_ord) == 1 and len(s50_ord) == 1)
                     for i in range(n_pares):
                         r40, r50 = s40_ord.iloc[i], s50_ord.iloc[i]
                         id40, id50 = r40['ID_Linea'], r50['ID_Linea']
@@ -759,12 +764,20 @@ if archivo_subido is not None:
                             continue
                         texto_cand = f"{formato_linea(id40)} | {formato_linea(id50)}"
                         dif_txt = f" (F difiere {res['dif_dias']} día(s))" if res['dif_dias'] else ""
-                        comentario = (
-                            f"Sugerencia por sectorización '{sector}': Asignación NO coincide exacta con "
-                            f"Referencia, pero el sector sí. Requiere verificación manual de Referencia{dif_txt}."
-                        )
+                        if es_unico_sin_ambiguedad:
+                            estado = f"Conciliado - Sectorización (candidato único, {sector})"
+                            comentario = (
+                                f"Conciliado por sectorización '{sector}': único candidato en banco+fecha+importe "
+                                f"exacto de cada lado, sin ambigüedad{dif_txt}."
+                            )
+                        else:
+                            estado = f"Sugerencia - Sectorización ({sector})"
+                            comentario = (
+                                f"Sugerencia por sectorización '{sector}': Asignación NO coincide exacta con "
+                                f"Referencia, pero el sector sí. Requiere verificación manual de Referencia{dif_txt}."
+                            )
                         for idx in (id40, id50):
-                            df.loc[df['ID_Linea'] == idx, 'Estado_Conciliacion'] = f"Sugerencia - Sectorización ({sector})"
+                            df.loc[df['ID_Linea'] == idx, 'Estado_Conciliacion'] = estado
                             df.loc[df['ID_Linea'] == idx, 'Candidatos_Conciliacion'] = texto_cand
                             df.loc[df['ID_Linea'] == idx, 'Comentario'] = comentario
                         usados.update([id40, id50])
