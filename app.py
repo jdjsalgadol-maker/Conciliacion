@@ -1,9 +1,9 @@
-# app_conciliacion_v26_mejoras.py
+# app_conciliacion_v27_mejoras.py
 #
 # REESCRITURA COMPLETA DEL MOTOR segun especificacion CLM entregada por
 # el usuario. Incluye optimizaciones de UI (Botón de ejecución) 
 # y resolución de bugs (Filtro Novedades, dayfirst en fechas, tolerancia IP/CB).
-# MODIFICACIÓN RECIENTE: Color VERDE exclusivo para DZ (40) multiposición sin conciliar.
+# MODIFICACIÓN RECIENTE (v27): Fix "Robo de candidatos" en Excepción Nequi (Doble pasada por Fecha Exacta).
 
 import streamlit as st
 import pandas as pd
@@ -21,10 +21,10 @@ st.markdown('''
     </style>
 ''', unsafe_allow_html=True)
 
-st.title("🏦 Conciliación Automatizada — Motor CLM v26 🤖")
+st.title("🏦 Conciliación Automatizada — Motor CLM v27 🤖")
 st.write("Sube tu archivo consolidado.")
 st.caption(
-    "Motor reescrito según especificación CLM (Incluye Parche Estructural v33 con límite de 4 días y Fix Novedades). "
+    "Motor reescrito según especificación CLM (Incluye Parche Estructural v33 con límite de 4 días y Fix Doble Pasada Nequi). "
     "A=Asignación, B=Nº doc, C=Clase doc, D=Fecha periodo, F=Fecha valor (PRINCIPAL), "
     "G=Clave, H=Referencia, I=Importe, K=Texto."
 )
@@ -770,13 +770,14 @@ if archivo_subido is not None:
                     usados.update([id40, id50])
 
                 # =====================================================
-                # 8. EXCEPCIÓN NEQUI (A = "Nequi", C = DZ)
+                # 8. EXCEPCIÓN NEQUI (A = "Nequi", C = DZ) - DOBLE PASADA v27
                 # =====================================================
                 df_40 = df_40[~df_40['ID_Linea'].isin(usados)]
                 df_50 = df_50[~df_50['ID_Linea'].isin(usados)]
 
                 df_nequi_40 = df_40[df_40['Es_Nequi'] == True]
 
+                # PASO 1: Priorizar estrictamente cruces exactos en fecha (0 días)
                 for _, r40 in df_nequi_40.iterrows():
                     id40 = r40['ID_Linea']
                     if id40 in usados: continue
@@ -792,8 +793,8 @@ if archivo_subido is not None:
                     
                     candidatos_50['_dif_dias'] = (candidatos_50['Fecha_F'] - r40['Fecha_F']).dt.days.abs().fillna(999)
                     
-                    # PARCHE: REGLA DE 4 DIAS ESTRICTA PARA TODOS LOS NEQUI
-                    candidatos_50 = candidatos_50[candidatos_50['_dif_dias'] <= TOPE_DIAS_ALERTA]
+                    # Filtro exclusivo para coincidencia exacta
+                    candidatos_50 = candidatos_50[candidatos_50['_dif_dias'] == 0]
                     if candidatos_50.empty: continue
 
                     exactos = candidatos_50[candidatos_50['Abs_I'] == r40['Abs_I']]
@@ -805,6 +806,42 @@ if archivo_subido is not None:
 
                     candidatos_50['_dif_val'] = (candidatos_50['Abs_I'] - r40['Abs_I']).abs()
                     con_tol = candidatos_50[candidatos_50['_dif_val'] <= tol_valor_purpura].sort_values('_dif_val')
+                    if not con_tol.empty:
+                        id50 = con_tol.iloc[0]['ID_Linea']
+                        ok, _ = clasificar_y_registrar(id40, id50, "Excepción Nequi (con diferencia de valor)")
+                        if ok: usados.update([id40, id50])
+                        continue
+
+                # PASO 2: Para los que quedaron, buscar candidatos con hasta TOPE_DIAS_ALERTA
+                for _, r40 in df_nequi_40.iterrows():
+                    id40 = r40['ID_Linea']
+                    if id40 in usados: continue
+                    candidatos_50 = df_50[
+                        (df_50[col_banco] == r40[col_banco]) &
+                        (~df_50['ID_Linea'].isin(usados))
+                    ].copy()
+                    if candidatos_50.empty: continue
+
+                    if r40['Sector'] != 'Sin clasificar':
+                        candidatos_filtrados = candidatos_50[(candidatos_50['Sector'] == r40['Sector']) | (candidatos_50['Sector'] == 'Sin clasificar')]
+                        if not candidatos_filtrados.empty: candidatos_50 = candidatos_filtrados
+                    
+                    candidatos_50['_dif_dias'] = (candidatos_50['Fecha_F'] - r40['Fecha_F']).dt.days.abs().fillna(999)
+                    candidatos_50 = candidatos_50[candidatos_50['_dif_dias'] <= TOPE_DIAS_ALERTA]
+                    
+                    # Ordenar para preferir siempre la fecha más cercana posible
+                    candidatos_50 = candidatos_50.sort_values('_dif_dias')
+                    if candidatos_50.empty: continue
+
+                    exactos = candidatos_50[candidatos_50['Abs_I'] == r40['Abs_I']]
+                    if not exactos.empty:
+                        id50 = exactos.iloc[0]['ID_Linea']
+                        ok, _ = clasificar_y_registrar(id40, id50, "Excepción Nequi (cruce importe exacto)")
+                        if ok: usados.update([id40, id50])
+                        continue
+
+                    candidatos_50['_dif_val'] = (candidatos_50['Abs_I'] - r40['Abs_I']).abs()
+                    con_tol = candidatos_50[candidatos_50['_dif_val'] <= tol_valor_purpura].sort_values(['_dif_val', '_dif_dias'])
                     if not con_tol.empty:
                         id50 = con_tol.iloc[0]['ID_Linea']
                         ok, _ = clasificar_y_registrar(id40, id50, "Excepción Nequi (con diferencia de valor)")
@@ -1045,7 +1082,6 @@ if archivo_subido is not None:
                     total_filas = len(df_final)
                     total_azul = int(df_final['Estado_Conciliacion'].str.contains('Conciliado|grupo azul|Flex', na=False, regex=True).sum())
                     
-                    # Filtros de colores calculados igual que en la exportación
                     mask_gris = df_final['Estado_Conciliacion'].str.contains('cruce múltiple ip/cb', case=False, na=False)
                     mask_durazno = df_final['Estado_Conciliacion'].str.contains('reclasificación', case=False, na=False)
                     mask_salmon = df_final['Estado_Conciliacion'].str.contains('grupo salmon|diferencia de fecha', case=False, na=False)
@@ -1053,7 +1089,6 @@ if archivo_subido is not None:
                     mask_azul = df_final['Estado_Conciliacion'].str.contains('conciliado|grupo azul|flex', case=False, na=False)
                     mask_fuera_rango = df_final['Estado_Conciliacion'].str.contains('fecha fuera de rango', case=False, na=False)
                     
-                    # Verde estrictamente = 40 (DZ) y que se repite y que NO cumplió ninguna alerta de color de las de arriba
                     mask_verde = (df_final[col_G] == '40') & (df_final['B_Repite'] == True) & ~(mask_gris | mask_durazno | mask_salmon | mask_morado | mask_azul | mask_fuera_rango)
                     total_verde = int(mask_verde.sum())
 
@@ -1117,7 +1152,7 @@ if archivo_subido is not None:
                 # =====================================================
                 # 13. INTERFAZ
                 # =====================================================
-                st.success("¡Conciliación completada con el motor de reglas CLM v26!")
+                st.success("¡Conciliación completada con el motor de reglas CLM v27!")
                 if not cuadre_ok:
                     st.warning("⚠️ Revisa la pestaña DESCARTADAS, el total de filas no coincide.")
                 for adv in advertencias:
@@ -1154,7 +1189,7 @@ if archivo_subido is not None:
                 st.download_button(
                     label="📥 Descargar Excel con Resultados",
                     data=output.getvalue(),
-                    file_name="Conciliacion_CLM_v26_Mejoras_Final.xlsx",
+                    file_name="Conciliacion_CLM_v27_Mejoras_Final.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
 
