@@ -3,6 +3,7 @@
 # REESCRITURA COMPLETA DEL MOTOR segun especificacion CLM entregada por
 # el usuario. Incluye optimizaciones de UI (Botón de ejecución) 
 # y resolución de bugs (Filtro Novedades, dayfirst en fechas, tolerancia IP/CB).
+# MODIFICACIÓN RECIENTE: Color VERDE exclusivo para DZ (40) multiposición sin conciliar.
 
 import streamlit as st
 import pandas as pd
@@ -43,22 +44,21 @@ with st.expander("⚙️ Parámetros de tolerancia"):
     )
     tol_valor_pct_general = st.number_input(
         "Diferencia relativa general de valor para alertar (%)",
-        min_value=0.00, value=0.00, step=0.05 # FIX: Por defecto 0.0% para exigir importes exactos
+        min_value=0.00, value=0.00, step=0.05
     ) / 100
     multiplo_redondo = st.selectbox("Múltiplo para valor 'redondo' (alta ambigüedad)", [50000, 100000], index=1)
 
 COLOR_AZUL = "#C5D9F1"      # Conciliado (todas las reglas cumplen)
-COLOR_VERDE = "#A9D18E"     # Sugerencia / DZ multiposición / sectorización / IP%
+COLOR_VERDE = "#A9D18E"     # EXCLUSIVO: DZ multiposición sin conciliar
 COLOR_SALMON = "#F5B7A1"    # Diferencia de fecha (hasta 4 días) - Regla 7
 COLOR_MORADO = "#C39BD3"    # Diferencia de valor máx $500 - Regla morado
 COLOR_DURAZNO = "#FAD7A0"   # Reclasificación de banco - Regla 6
-COLOR_BLANCO = "#FFFFFF"    # Pendiente
+COLOR_BLANCO = "#FFFFFF"    # Pendiente / Sugerencias estándar
 COLOR_GRIS = "#D0CECE"      # Cruces múltiples de documento IP (Regla 3)
 
 archivo_subido = st.file_uploader("Selecciona el archivo de Excel o CSV", type=['xlsx', 'csv'])
 
 if archivo_subido is not None:
-    # NUEVO: Botón para evitar la recarga automática al tocar un parámetro
     if st.button("🚀 Ejecutar Conciliación", use_container_width=True):
         try:
             with st.spinner("Ejecutando motor de reglas CLM... Esto puede tomar unos segundos."):
@@ -79,7 +79,6 @@ if archivo_subido is not None:
                 df.columns = df.columns.str.strip()
 
                 # ---- Mapeo CLM -> nombres reales de columna ----
-                # FIX: Fallback tipográfico a 'Asignacion' (sin tilde) para lanzar el error adecuado si no existe
                 col_A = 'Asignación' if 'Asignación' in df.columns else ('Asignacion' if 'Asignacion' in df.columns else None)
                 col_B = 'Nº documento' if 'Nº documento' in df.columns else 'Nº doc.'
                 col_C = 'Clase de documento' if 'Clase de documento' in df.columns else ('Clase doc.' if 'Clase doc.' in df.columns else None)
@@ -148,7 +147,6 @@ if archivo_subido is not None:
                 df[col_I] = pd.to_numeric(df[col_I], errors='coerce').fillna(0)
                 df['Abs_I'] = df[col_I].abs()
 
-                # FIX: Añadido dayfirst=True para evitar cruces dd/mm vs mm/dd
                 df['Fecha_F'] = pd.to_datetime(df[col_F], errors='coerce', dayfirst=True)
                 df[col_F] = df['Fecha_F'].dt.date
 
@@ -979,7 +977,6 @@ if archivo_subido is not None:
 
                 def color_fila(row):
                     est = str(row['Estado_Conciliacion']).strip().lower()
-                    if est in ('pendiente', '', 'nan'): return [f'background-color: {COLOR_BLANCO}; color: black'] * len(row)
                     
                     if 'cruce múltiple ip/cb' in est: return [f'background-color: {COLOR_GRIS}; color: black'] * len(row)
                     
@@ -987,12 +984,17 @@ if archivo_subido is not None:
                     
                     if 'grupo salmon' in est or 'diferencia de fecha' in est: return [f'background-color: {COLOR_SALMON}; color: black'] * len(row)
                     if 'diferencia de valor' in est:
-                        if 'regla 7b' in est: return [f'background-color: {COLOR_VERDE}; color: black'] * len(row)
+                        if 'regla 7b' in est: return [f'background-color: {COLOR_BLANCO}; color: black'] * len(row)
                         return [f'background-color: {COLOR_MORADO}; color: black'] * len(row)
                     
-                    if 'dz multiposición' in est or 'dz posiciones múltiples' in est or 'sectorización desbalanceada' in est or 'sugerencia' in est: return [f'background-color: {COLOR_VERDE}; color: black'] * len(row)
                     if 'conciliado' in est or 'grupo azul' in est or 'flex' in est: return [f'background-color: {COLOR_AZUL}; color: black'] * len(row)
                     if 'fecha fuera de rango' in est: return [f'background-color: {COLOR_BLANCO}; color: red'] * len(row)
+                    
+                    # REGLA VERDE ESTRICTA: Solo Clave 40, con B_Repite, que no cruzó en los estados anteriores.
+                    is_40 = str(row.get(col_G, '')).strip() == '40'
+                    is_repite = bool(row.get('B_Repite', False))
+                    if is_40 and is_repite:
+                        return [f'background-color: {COLOR_VERDE}; color: black'] * len(row)
                     
                     return [f'background-color: {COLOR_BLANCO}; color: black'] * len(row)
 
@@ -1042,23 +1044,33 @@ if archivo_subido is not None:
                 with pd.ExcelWriter(output, engine='openpyxl') as writer:
                     total_filas = len(df_final)
                     total_azul = int(df_final['Estado_Conciliacion'].str.contains('Conciliado|grupo azul|Flex', na=False, regex=True).sum())
-                    total_verde = int(
-                        df_final['Estado_Conciliacion'].str.contains('Sugerencia|DZ multiposición|DZ posiciones múltiples|Sectorización desbalanceada|Regla 7B', na=False, regex=True).sum()
-                    )
-                    total_salmon = int(df_final['Estado_Conciliacion'].str.contains('Diferencia de fecha|grupo salmon', na=False, regex=True).sum())
-                    total_morado = int(df_final['Estado_Conciliacion'].str.contains('Diferencia de valor', na=False).sum()) - int(df_final['Estado_Conciliacion'].str.contains('Regla 7B', na=False).sum())
-                    total_durazno = int(df_final['Estado_Conciliacion'].str.contains('Reclasificación', na=False).sum())
+                    
+                    # Filtros de colores calculados igual que en la exportación
+                    mask_gris = df_final['Estado_Conciliacion'].str.contains('cruce múltiple ip/cb', case=False, na=False)
+                    mask_durazno = df_final['Estado_Conciliacion'].str.contains('reclasificación', case=False, na=False)
+                    mask_salmon = df_final['Estado_Conciliacion'].str.contains('grupo salmon|diferencia de fecha', case=False, na=False)
+                    mask_morado = df_final['Estado_Conciliacion'].str.contains('diferencia de valor', case=False, na=False) & ~df_final['Estado_Conciliacion'].str.contains('regla 7b', case=False, na=False)
+                    mask_azul = df_final['Estado_Conciliacion'].str.contains('conciliado|grupo azul|flex', case=False, na=False)
+                    mask_fuera_rango = df_final['Estado_Conciliacion'].str.contains('fecha fuera de rango', case=False, na=False)
+                    
+                    # Verde estrictamente = 40 (DZ) y que se repite y que NO cumplió ninguna alerta de color de las de arriba
+                    mask_verde = (df_final[col_G] == '40') & (df_final['B_Repite'] == True) & ~(mask_gris | mask_durazno | mask_salmon | mask_morado | mask_azul | mask_fuera_rango)
+                    total_verde = int(mask_verde.sum())
+
+                    total_salmon = int(mask_salmon.sum())
+                    total_morado = int(mask_morado.sum())
+                    total_durazno = int(mask_durazno.sum())
                     total_pendiente = int(df_final['Estado_Conciliacion'].str.contains('Pendiente', na=False).sum())
 
                     resumen = pd.DataFrame({
                         "Métrica": [
                             "Fecha de procesamiento", "Total filas procesadas",
                             "Azul - Conciliados Exactos y Flex",
-                            "Verde - Sugerencias de Revisión Manual",
+                            "Verde - Documentos DZ multiposición sin conciliar",
                             "Salmón - Diferencia de fecha (Regla 7)",
                             "Morado - Diferencia de valor máx $500",
                             "Durazno - Reclasificación de banco (Regla 6)",
-                            "Blanco - Pendientes / Bloqueados",
+                            "Blanco - Pendientes / Otras Sugerencias",
                             "IP conciliado exacto (Regla 3)", "IP con % de diferencia",
                             "Regla 8 Nequi - Azul (total y FIFO exacto)",
                             "Regla 8 Nequi - Sugerencia (grupo no cuadra exacto)",
@@ -1077,7 +1089,6 @@ if archivo_subido is not None:
                     resumen.to_excel(writer, index=False, sheet_name='RESUMEN')
                     pestanas_usadas.add('RESUMEN')
 
-                    # FIX BUG PRINCIPAL: Filtro de novedades con Regex para atrapar todas las sugerencias compuestas
                     df_nov = df_final[df_final[col_G] == '40'].copy()
                     patron_alerta = 'Diferencia de fecha|Diferencia de valor|Reclasificación|grupo salmon|Sugerencia'
                     mask_alerta = df_nov['Estado_Conciliacion'].str.contains(patron_alerta, na=False, regex=True)
@@ -1115,19 +1126,18 @@ if archivo_subido is not None:
                 st.markdown(f'''
 **Leyenda de colores:**
 - <span style="background-color:{COLOR_AZUL}; padding:2px 8px;">Azul: Conciliado — cumple todas las reglas (A=H, misma F, mismo banco, importe exacto, sector coherente)</span>
-- <span style="background-color:{COLOR_VERDE}; padding:2px 8px;">Verde: Sugerencias — revisión de sectorización, Regla 7B (diferencias > 500) y DZ multiposición</span>
+- <span style="background-color:{COLOR_VERDE}; padding:2px 8px;">Verde: Documentos DZ (clv=40) con múltiples posiciones que no lograron conciliar.</span>
 - <span style="background-color:{COLOR_SALMON}; padding:2px 8px;">Salmón: Diferencia de fecha F (hasta {TOPE_DIAS_ALERTA} días)</span>
 - <span style="background-color:{COLOR_MORADO}; padding:2px 8px;">Morado: Diferencia de valor (máx ${tol_valor_purpura:.0f})</span>
 - <span style="background-color:{COLOR_DURAZNO}; padding:2px 8px;">Durazno: Reclasificación de banco</span>
 - <span style="background-color:{COLOR_GRIS}; padding:2px 8px;">Gris: Cruces múltiples IP/CB (Regla 3)</span>
-- <span style="background-color:{COLOR_BLANCO}; padding:2px 8px; border:1px solid #ccc;">Blanco: Pendientes / Bloqueos por cruces fuera del límite de días</span>
+- <span style="background-color:{COLOR_BLANCO}; padding:2px 8px; border:1px solid #ccc;">Blanco: Pendientes / Otras Sugerencias / Bloqueos por cruces fuera del límite de días</span>
 
 **Reglas clave aplicadas:**
 - La fecha D (periodo) es SOLO informativa. La fecha F es la ÚNICA que valida conciliación.
 - Los IP cruzan por referencia homologada agrupada, o 1 a 1 por Sector y Valor exactos (Parche v33).
 - **Muro de Contención Contable:** Salvo la "Flex Referencia Parcial", NINGÚN cruce superará el tope estricto de {TOPE_DIAS_ALERTA} días de diferencia.
-- Los Nequi exigen candidato en mismo banco/sector y aplican la tolerancia morada o estricta de días.
-- Regla 7B: Diferencias altas de valor (> $500) en el mismo sector/fecha quedarán sugeridas en VERDE.
+- Regla 7B: Diferencias altas de valor (> $500) en el mismo sector/fecha quedarán sugeridas (ahora en BLANCO).
 ''', unsafe_allow_html=True)
 
                 c1, c2, c3, c4, c5, c6 = st.columns(6)
