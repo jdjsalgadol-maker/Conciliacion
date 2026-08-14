@@ -548,12 +548,30 @@ if archivo_subido is not None:
                             dif_d = int(candidatos.iloc[0]['_dif_dias'])
                             
                             texto_cand = f"{formato_linea(id_ip)} | {formato_linea(id_cb)}"
-                            comentario = f"Reclasificación de banco (Exclusiva IP): Registrado en '{banco_ip}', esperado en '{banco_cb}'. Diferencia F={dif_d} día(s). Mismo importe."
-                            
-                            for idx in [id_ip, id_cb]:
-                                df.loc[df['ID_Linea'] == idx, 'Estado_Conciliacion'] = 'Reclasificación de banco'
-                                df.loc[df['ID_Linea'] == idx, 'Candidatos_Conciliacion'] = texto_cand
-                                df.loc[df['ID_Linea'] == idx, 'Comentario'] = comentario
+                            doc_ip = fila_ip[col_B]
+                            doc_cb = candidatos.iloc[0][col_B]
+                            # FIX: antes se guardaba el MISMO comentario (escrito solo desde
+                            # la perspectiva del IP) en ambas filas. Eso hacía que la fila CB
+                            # mostrara "Registrado en" un banco que NO era el de su propia
+                            # columna 'Clave referencia 3', generando confusión. Ahora cada
+                            # fila describe su propio banco y el de su contraparte.
+                            comentario_ip = (
+                                f"Reclasificación de banco (Exclusiva IP): esta línea está registrada en "
+                                f"'{banco_ip}'; su posible contraparte (Doc. {int(doc_cb)}) está en '{banco_cb}'. "
+                                f"Diferencia F={dif_d} día(s). Mismo importe."
+                            )
+                            comentario_cb = (
+                                f"Reclasificación de banco (Exclusiva IP): esta línea está registrada en "
+                                f"'{banco_cb}'; su posible contraparte (Doc. {int(doc_ip)}) está en '{banco_ip}'. "
+                                f"Diferencia F={dif_d} día(s). Mismo importe."
+                            )
+
+                            df.loc[df['ID_Linea'] == id_ip, 'Estado_Conciliacion'] = 'Reclasificación de banco'
+                            df.loc[df['ID_Linea'] == id_ip, 'Candidatos_Conciliacion'] = texto_cand
+                            df.loc[df['ID_Linea'] == id_ip, 'Comentario'] = comentario_ip
+                            df.loc[df['ID_Linea'] == id_cb, 'Estado_Conciliacion'] = 'Reclasificación de banco'
+                            df.loc[df['ID_Linea'] == id_cb, 'Candidatos_Conciliacion'] = texto_cand
+                            df.loc[df['ID_Linea'] == id_cb, 'Comentario'] = comentario_cb
                             usados.update([id_ip, id_cb])
                             parejas_registradas.append((id_ip, id_cb))
                         elif len(candidatos) > 1:
@@ -923,6 +941,14 @@ if archivo_subido is not None:
                 pendientes_50b = df[(df['ID_Linea'].isin(df_50['ID_Linea'])) & (~df['ID_Linea'].isin(usados))]
 
                 for (fecha_z, importe_z), grupo40 in pendientes_40b.groupby([col_F, 'Abs_I']):
+                    # FIX: los valores "redondos" (múltiplos de multiplo_redondo, ej.
+                    # $1.000.000 o $3.000.000) se repiten decenas de veces el mismo día
+                    # entre transacciones totalmente distintas. Compararlos solo por
+                    # Fecha+Importe genera listas de "múltiples candidatos" enormes e
+                    # inútiles (ruido), sin ninguna evidencia real de reclasificación.
+                    # Se excluyen aquí igual que en el resto del motor (es_valor_redondo).
+                    if importe_z > 0 and importe_z % multiplo_redondo == 0:
+                        continue
                     grupo40 = grupo40[~grupo40['ID_Linea'].isin(usados)]
                     if grupo40.empty:
                         continue
