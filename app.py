@@ -20,7 +20,7 @@ st.markdown('''
 st.title("🏦 Conciliación Automatizada — Motor CLM v28 (Corregido) 🤖")
 st.write("Sube tu archivo consolidado.")
 st.caption(
-    "SElecciona opcion tarde despues de depurar."
+    "Selecciona opcion tarde despues de depurar."
 )
 
 with st.expander("⚙️ Parámetros de tolerancia"):
