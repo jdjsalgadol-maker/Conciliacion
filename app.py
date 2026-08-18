@@ -4,6 +4,7 @@
 # el usuario. Incluye optimizaciones de UI (Botón de ejecución) 
 # y resolución de bugs (Filtro Novedades, dayfirst en fechas, tolerancia IP/CB).
 # MODIFICACIÓN RECIENTE (v27): Fix "Robo de candidatos" en Excepción Nequi (Doble pasada por Fecha Exacta).
+# CORRECCIÓN ADICIONAL: Las líneas IP no deben generar reclasificación de banco.
 
 import streamlit as st
 import pandas as pd
@@ -348,10 +349,15 @@ if archivo_subido is not None:
 
                     resultado = {
                         'ok': False, 'motivo': '', 'dif_dias': None,
-                        'mismo_banco': False, 'banco_a': '', 'banco_b': '',
+                        'mismo_banco': True, 'banco_a': '', 'banco_b': '',
                         'dif_valor': None, 'pct_valor': None,
-                        'mismo_sector': True, 'es_nequi': False
+                        'mismo_sector': True, 'es_nequi': False, 'es_ip': False
                     }
+
+                    clase_a = str(ra.get(col_C, '')).strip().upper() if usar_ipcb else ''
+                    clase_b = str(rb.get(col_C, '')).strip().upper() if usar_ipcb else ''
+                    es_ip = (clase_a == 'IP') or (clase_b == 'IP')
+                    resultado['es_ip'] = es_ip
 
                     fa, fb = ra['Fecha_F'], rb['Fecha_F']
                     if pd.isna(fa) or pd.isna(fb):
@@ -369,7 +375,13 @@ if archivo_subido is not None:
                     banco_b = str(rb[col_banco]).strip()
                     resultado['banco_a'] = banco_a
                     resultado['banco_b'] = banco_b
-                    resultado['mismo_banco'] = (banco_a == banco_b)
+
+                    if es_ip:
+                        # El campo banco de una línea IP es heredado y no confiable.
+                        # Se ignora la comparación de banco por completo.
+                        resultado['mismo_banco'] = True
+                    else:
+                        resultado['mismo_banco'] = (banco_a == banco_b)
 
                     sector_a = str(ra.get('Sector', '')).strip()
                     sector_b = str(rb.get('Sector', '')).strip()
@@ -398,6 +410,7 @@ if archivo_subido is not None:
                     resultado['motivo'] = "Cumple reglas transversales"
                     return resultado
 
+
                 def clasificar_y_registrar(id40, id50, base_txt):
                     res = gate_seguridad(id40, id50, exigir_importe_exacto=True, tolerancia_valor=tol_valor_purpura)
                     if not res['ok']:
@@ -407,7 +420,18 @@ if archivo_subido is not None:
                     partes_comentario = [base_txt]
                     estado_final = 'Conciliado - Cumple todas las reglas'
 
-                    if not res['mismo_banco']:
+                    if res['es_ip']:
+                        # Las líneas IP nunca generan reclasificación de banco: su campo
+                        # banco es heredado y no confiable. Se evalúa directo por fecha y valor.
+                        if res['dif_dias'] and res['dif_dias'] > 0:
+                            estado_final = 'Diferencia de fecha'
+                            partes_comentario.append(f"Diferencia de fecha: F40 vs F50 difieren {res['dif_dias']} día(s) (tope {TOPE_DIAS_ALERTA}).")
+                        elif res['dif_valor'] and res['dif_valor'] > 0:
+                            estado_final = 'Diferencia de valor'
+                            partes_comentario.append(f"Diferencia de valor: dif=${res['dif_valor']:,.0f} ({res['pct_valor']*100:.2f}%).")
+                        else:
+                            estado_final = 'Conciliado - IP (banco no evaluado, fecha e importe exactos)'
+                    elif not res['mismo_banco']:
                         estado_final = 'Reclasificación de banco'
                         partes_comentario.append(f"Reclasificación de banco: registrado en '{res['banco_a']}'; banco esperado '{res['banco_b']}'.")
                     elif res['dif_dias'] and res['dif_dias'] > 0:
@@ -941,12 +965,6 @@ if archivo_subido is not None:
                 pendientes_50b = df[(df['ID_Linea'].isin(df_50['ID_Linea'])) & (~df['ID_Linea'].isin(usados))]
 
                 for (fecha_z, importe_z), grupo40 in pendientes_40b.groupby([col_F, 'Abs_I']):
-                    # FIX: los valores "redondos" (múltiplos de multiplo_redondo, ej.
-                    # $1.000.000 o $3.000.000) se repiten decenas de veces el mismo día
-                    # entre transacciones totalmente distintas. Compararlos solo por
-                    # Fecha+Importe genera listas de "múltiples candidatos" enormes e
-                    # inútiles (ruido), sin ninguna evidencia real de reclasificación.
-                    # Se excluyen aquí igual que en el resto del motor (es_valor_redondo).
                     if importe_z > 0 and importe_z % multiplo_redondo == 0:
                         continue
                     grupo40 = grupo40[~grupo40['ID_Linea'].isin(usados)]
