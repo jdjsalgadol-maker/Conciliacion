@@ -1,8 +1,5 @@
 # app_conciliacion_v28_corregido.py
 #
-# CORRECCION SOBRE v27 (motor-tarde.txt). Se corrigen 5 bugs detectados
-# en el analisis comparativo contra la version original:
-#
 
 import streamlit as st
 import pandas as pd
@@ -23,9 +20,7 @@ st.markdown('''
 st.title("🏦 Conciliación Automatizada — Motor CLM v28 (Corregido) 🤖")
 st.write("Sube tu archivo consolidado.")
 st.caption(
-    "Motor v28: corrige 5 bugs detectados en v27 (ver cabecera del código). "
-    "A=Asignación, B=Nº doc, C=Clase doc, D=Fecha periodo, F=Fecha valor (PRINCIPAL), "
-    "G=Clave, H=Referencia, I=Importe, K=Texto."
+    "SElecciona opcion tarde despues de depurar."
 )
 
 with st.expander("⚙️ Parámetros de tolerancia"):
