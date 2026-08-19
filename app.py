@@ -1,4 +1,4 @@
-# app_conciliacion_v29_estados_simplificados.py
+# app_conciliacion_v30_comentarios_cortos.py
 #
 
 import streamlit as st
@@ -17,7 +17,7 @@ st.markdown('''
     </style>
 ''', unsafe_allow_html=True)
 
-st.title("🏦 Conciliación Automatizada — Motor CLM v29 (Estados Simplificados) 🤖")
+st.title("🏦 Conciliación Automatizada  🤖")
 st.write("Sube tu archivo consolidado.")
 st.caption(
     "Selecciona opcion tarde despues de depurar."
@@ -1076,12 +1076,13 @@ if archivo_subido is not None:
                     df.loc[sin_p & (df['Comentario'] == ''), 'Comentario'] = 'Sin coincidencia ni sugerencia que cumpla reglas de seguridad.'
 
                 # =====================================================
-                # SIMPLIFICACIÓN DE ESTADOS Y EXPORTACIÓN (¡NUEVO BLOQUE!)
+                # SIMPLIFICACIÓN DE ESTADOS, COMENTARIOS Y EXPORTACIÓN
                 # =====================================================
                 df_final = df.drop(columns=['ID_Linea', 'Abs_I', 'Fecha_F', 'Fecha_D'], errors='ignore')
 
-                # Preservamos el estado enriquecido en una columna oculta
+                # Preservamos los valores enriquecidos/técnicos en columnas ocultas
                 df_final['Estado_Tecnico'] = df_final['Estado_Conciliacion']
+                df_final['Comentario_Tecnico'] = df_final['Comentario']
 
                 def simplificar_estado(est):
                     est_lower = str(est).lower()
@@ -1096,8 +1097,48 @@ if archivo_subido is not None:
                     else:
                         return 'Pendiente o solicitar soporte'
 
-                # Aplicamos la traducción a la columna visible
+                def simplificar_comentario(txt):
+                    txt_lower = str(txt).lower()
+                    if not txt_lower or txt_lower == 'nan': return ""
+                    
+                    if 'sin coincidencia' in txt_lower:
+                        if 'pdv' in txt_lower or 'ip' in txt_lower:
+                            return "Sin coincidencia (Falta Referencia POS)"
+                        return "Sin coincidencia"
+                    if 'bloquead' in txt_lower or 'fuera de rango' in txt_lower:
+                        return "Excede límite de días permitidos"
+                    if 'nequi' in txt_lower:
+                        if 'no cuadra' in txt_lower or 'ambigua' in txt_lower or 'múltiples' in txt_lower or 'varios' in txt_lower or 'candidatos' in txt_lower:
+                            return "Revisar Nequi (Ambigüedad o Totales)"
+                        return "Cruce Nequi válido"
+                    if 'reclasificación' in txt_lower or 'regla 6' in txt_lower:
+                        return "Registrado en otro banco"
+                    if 'diferencia de fecha' in txt_lower or 'diferencia f=' in txt_lower or 't3' in txt_lower:
+                        return "Diferencia de fecha"
+                    if 'diferencia de valor' in txt_lower or 'regla 7b' in txt_lower or 'dif=$' in txt_lower or 't4' in txt_lower:
+                        return "Diferencia de valor"
+                    if 'gasto' in txt_lower or 'comisión' in txt_lower or 't6' in txt_lower:
+                        return "Posible gasto bancario"
+                    if 'desbalanceado' in txt_lower:
+                        return "Descuadre por sector"
+                    if 'múltiples posiciones' in txt_lower or 'varias posiciones' in txt_lower:
+                        return "Varias posiciones sin cruzar"
+                    if 'ip/cb' in txt_lower or 'homologad' in txt_lower or 'pdv' in txt_lower or 't1' in txt_lower:
+                        return "Cruce Punto de Venta (POS)"
+                    if 'flex' in txt_lower or 'parcial' in txt_lower or 't2' in txt_lower:
+                        return "Cruce por referencia parcial"
+                    if 'fifo' in txt_lower:
+                        return "Cruce por orden FIFO"
+                    if 'tarde' in txt_lower or 't5' in txt_lower:
+                        return "Cruce forzado (Modo Rescate)"
+                    if 'cumple todas' in txt_lower or 'exacto' in txt_lower:
+                        return "Cruce exacto"
+                    
+                    return "Revisión manual requerida"
+
+                # Aplicamos la traducción a las columnas visibles
                 df_final['Estado_Conciliacion'] = df_final['Estado_Tecnico'].apply(simplificar_estado)
+                df_final['Comentario'] = df_final['Comentario_Tecnico'].apply(simplificar_comentario)
 
                 columnas_visibles = columnas_originales + [
                     'Estado_Conciliacion', 'Comentario', 'Candidatos_Conciliacion', 'Sector'
@@ -1112,7 +1153,6 @@ if archivo_subido is not None:
                     df_final[c] = pd.to_datetime(df_final[c], errors='coerce').dt.strftime('%d/%m/%Y')
 
                 def color_fila(row):
-                    # Usamos el índice de la fila para consultar el estado interno original y mantener las reglas de color exactas
                     idx = row.name
                     est = str(df_final.loc[idx, 'Estado_Tecnico']).strip().lower()
 
@@ -1183,7 +1223,6 @@ if archivo_subido is not None:
                 with pd.ExcelWriter(output, engine='openpyxl') as writer:
                     total_filas = len(df_final)
                     
-                    # Usamos Estado_Tecnico para calcular todas las métricas de forma segura
                     total_azul = int(df_final['Estado_Tecnico'].str.contains('Conciliado|grupo azul|Flex', na=False, regex=True).sum())
                     mask_gris = df_final['Estado_Tecnico'].str.contains('cruce múltiple ip/cb', case=False, na=False)
                     mask_durazno = df_final['Estado_Tecnico'].str.contains('reclasificación', case=False, na=False)
@@ -1235,13 +1274,11 @@ if archivo_subido is not None:
                     df_nov = df_final[df_final[col_G] == '40'].copy()
                     patron_alerta = 'Diferencia de fecha|Diferencia de valor|Reclasificación|grupo salmon|Sugerencia'
                     
-                    # Filtramos por Estado_Tecnico para no perder ninguna casuística compleja
                     mask_alerta = df_nov['Estado_Tecnico'].str.contains(patron_alerta, na=False, regex=True)
                     mask_sin_candidato = df_nov['Candidatos_Conciliacion'].astype(str).str.strip().isin(['', 'nan', 'None'])
 
                     df_nov = df_nov[mask_alerta | mask_sin_candidato]
                     if not df_nov.empty:
-                        # Ordenamos utilizando Estado_Tecnico para agrupar problemas similares
                         df_nov = df_nov.sort_values(by=['Estado_Tecnico', col_I])
                         hoja_segura(writer, vista(df_nov), 'NOVEDADES_Y_PENDIENTES_40', estilo=True)
                     else:
@@ -1270,7 +1307,7 @@ if archivo_subido is not None:
                 # =====================================================
                 # INTERFAZ
                 # =====================================================
-                st.success("¡Conciliación completada con el motor de reglas CLM v29 (Estados Simplificados)!")
+                st.success("¡Conciliación completada con el motor de reglas CLM v30 (Textos Cortos)!")
                 if not cuadre_ok:
                     st.warning("⚠️ Revisa la pestaña DESCARTADAS, el total de filas no coincide.")
                 for adv in advertencias:
@@ -1287,15 +1324,9 @@ if archivo_subido is not None:
 - <span style="background-color:{COLOR_GRIS}; padding:2px 8px;">Gris: Cruces múltiples IP/CB (Regla 3)</span>
 - <span style="background-color:{COLOR_BLANCO}; padding:2px 8px; border:1px solid #ccc;">Blanco: Pendientes / Otras Sugerencias / Bloqueos por cruces fuera del límite de días</span>
 
-**Reglas clave aplicadas (v29):**
-- La fecha D (periodo) es SOLO informativa. La fecha F es la ÚNICA que valida conciliación.
-- Los IP cruzan por referencia homologada agrupada (sin exigir fecha exacta), o 1 a 1 por Sector, Valor y Fecha (tolerancia {TOPE_DIAS_ALERTA} días).
-- **Las líneas IP NUNCA generan Reclasificación de banco**: su campo banco es heredado y no confiable (bug crítico de v27 corregido).
-- **Muro de Contención Contable:** Salvo la "Flex Referencia Parcial", NINGÚN cruce superará el tope estricto de {TOPE_DIAS_ALERTA} días de diferencia.
-- Regla 7B: Diferencias de valor superiores a ${tol_valor_purpura:,.0f} en el mismo sector/fecha quedarán sugeridas (BLANCO), usando el parámetro configurado por el usuario.
-- Excepción Nequi: si hay más de un candidato exacto o con tolerancia, se marca explícitamente como "ambigua" en vez de tomar el primero en silencio.
-- Verde: EXCLUSIVO para documentos DZ con múltiples posiciones que no lograron conciliar; ninguna otra "Sugerencia" se pinta de verde.
-- **Visualización (NUEVO):** Los estados de la columna M han sido simplificados para su exportación por correo, reteniéndose el detalle analítico en los comentarios.
+**Novedades v30:**
+- **Estados y Comentarios simplificados:** Ahora la exportación usa frases ultra-cortas y ejecutivas (ej. "Registrado en otro banco" en lugar del texto técnico largo) para facilitar su revisión y el envío por correo.
+- Se conservan las columnas técnicas completas de forma invisible en el procesador para asegurar precisión en filtros y cruces.
 ''', unsafe_allow_html=True)
 
                 c1, c2, c3, c4, c5, c6 = st.columns(6)
@@ -1312,7 +1343,7 @@ if archivo_subido is not None:
                 st.download_button(
                     label="📥 Descargar Excel con Resultados",
                     data=output.getvalue(),
-                    file_name="Conciliacion_CLM_v29_Estados_Simplificados.xlsx",
+                    file_name="Conciliacion_CLM_v30_Textos_Cortos.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
 
