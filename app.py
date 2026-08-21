@@ -342,7 +342,8 @@ if archivo_subido is not None:
                     parejas_registradas.append((id40, id50))
                     return True
 
-                def gate_seguridad(id40, id50, exigir_importe_exacto=True, tolerancia_valor=None):
+                # SE AÑADE EL PARÁMETRO ignorar_sector=False
+                def gate_seguridad(id40, id50, exigir_importe_exacto=True, tolerancia_valor=None, ignorar_sector=False):
                     res = df.loc[df['ID_Linea'].isin([id40, id50])]
                     ra = res[res['ID_Linea'] == id40].iloc[0]
                     rb = res[res['ID_Linea'] == id50].iloc[0]
@@ -383,11 +384,14 @@ if archivo_subido is not None:
 
                     sector_a = str(ra.get('Sector', '')).strip()
                     sector_b = str(rb.get('Sector', '')).strip()
-                    if sector_a not in ('', 'Sin clasificar') and sector_b not in ('', 'Sin clasificar'):
-                        if sector_a != sector_b:
-                            resultado['motivo'] = f"Sector distinto ({sector_a} vs {sector_b})"
-                            resultado['mismo_sector'] = False
-                            return resultado
+                    
+                    # SE EVALÚA EL SALVOCONDUCTO AQUÍ
+                    if not ignorar_sector:
+                        if sector_a not in ('', 'Sin clasificar') and sector_b not in ('', 'Sin clasificar'):
+                            if sector_a != sector_b:
+                                resultado['motivo'] = f"Sector distinto ({sector_a} vs {sector_b})"
+                                resultado['mismo_sector'] = False
+                                return resultado
 
                     imp_a = abs(ra[col_I])
                     imp_b = abs(rb[col_I])
@@ -408,8 +412,9 @@ if archivo_subido is not None:
                     resultado['motivo'] = "Cumple reglas transversales"
                     return resultado
 
-                def clasificar_y_registrar(id40, id50, base_txt):
-                    res = gate_seguridad(id40, id50, exigir_importe_exacto=True, tolerancia_valor=tol_valor_purpura)
+                # SE AÑADE EL PARÁMETRO ignorar_sector=False
+                def clasificar_y_registrar(id40, id50, base_txt, ignorar_sector=False):
+                    res = gate_seguridad(id40, id50, exigir_importe_exacto=True, tolerancia_valor=tol_valor_purpura, ignorar_sector=ignorar_sector)
                     if not res['ok']:
                         return False, res['motivo']
 
@@ -747,7 +752,8 @@ if archivo_subido is not None:
                     exactos = candidatos_50[candidatos_50['Abs_I'] == df.loc[df['ID_Linea'] == id40, 'Abs_I'].iloc[0]]
                     if len(exactos) == 1:
                         id50 = exactos.iloc[0]['ID_Linea']
-                        ok, _ = clasificar_y_registrar(id40, id50, "Excepción Nequi (cruce importe exacto)")
+                        # SE AÑADE ignorar_sector=True AL SALVOCONDUCTO
+                        ok, _ = clasificar_y_registrar(id40, id50, "Excepción Nequi (cruce importe exacto)", ignorar_sector=True)
                         if ok:
                             usados.update([id40, id50])
                         return True
@@ -767,7 +773,8 @@ if archivo_subido is not None:
                     con_tol = candidatos_50[candidatos_50['_dif_val'] <= tol_valor_purpura].sort_values('_dif_val')
                     if len(con_tol) == 1:
                         id50 = con_tol.iloc[0]['ID_Linea']
-                        ok, _ = clasificar_y_registrar(id40, id50, "Excepción Nequi (con diferencia de valor)")
+                        # SE AÑADE ignorar_sector=True AL SALVOCONDUCTO
+                        ok, _ = clasificar_y_registrar(id40, id50, "Excepción Nequi (con diferencia de valor)", ignorar_sector=True)
                         if ok:
                             usados.update([id40, id50])
                         return True
@@ -782,6 +789,7 @@ if archivo_subido is not None:
                         return True
                     return False
 
+                # PRIMERA PASADA: BÚSQUEDA MISMO DÍA
                 for _, r40 in df_nequi_40.iterrows():
                     id40 = r40['ID_Linea']
                     if id40 in usados: continue
@@ -791,16 +799,14 @@ if archivo_subido is not None:
                     ].copy()
                     if candidatos_50.empty: continue
 
-                    # if r40['Sector'] != 'Sin clasificar':
-                    #     candidatos_filtrados = candidatos_50[(candidatos_50['Sector'] == r40['Sector']) | (candidatos_50['Sector'] == 'Sin clasificar')]
-                    #     if not candidatos_filtrados.empty: candidatos_50 = candidatos_filtrados
-
+                    # Filtro de sector eliminado para Nequi
                     candidatos_50['_dif_dias'] = (candidatos_50['Fecha_F'] - r40['Fecha_F']).dt.days.abs().fillna(999)
                     candidatos_50 = candidatos_50[candidatos_50['_dif_dias'] == 0]
                     if candidatos_50.empty: continue
 
                     procesar_candidato_nequi(id40, candidatos_50)
 
+                # SEGUNDA PASADA: BÚSQUEDA CON TOLERANCIA DE DÍAS
                 for _, r40 in df_nequi_40.iterrows():
                     id40 = r40['ID_Linea']
                     if id40 in usados: continue
@@ -810,10 +816,7 @@ if archivo_subido is not None:
                     ].copy()
                     if candidatos_50.empty: continue
 
-                    # if r40['Sector'] != 'Sin clasificar':
-                    #     candidatos_filtrados = candidatos_50[(candidatos_50['Sector'] == r40['Sector']) | (candidatos_50['Sector'] == 'Sin clasificar')]
-                    #     if not candidatos_filtrados.empty: candidatos_50 = candidatos_filtrados
-
+                    # Filtro de sector eliminado para Nequi
                     candidatos_50['_dif_dias'] = (candidatos_50['Fecha_F'] - r40['Fecha_F']).dt.days.abs().fillna(999)
                     candidatos_50 = candidatos_50[candidatos_50['_dif_dias'] <= TOPE_DIAS_ALERTA]
                     candidatos_50 = candidatos_50.sort_values('_dif_dias')
