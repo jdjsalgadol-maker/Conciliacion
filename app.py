@@ -791,9 +791,9 @@ if archivo_subido is not None:
                     ].copy()
                     if candidatos_50.empty: continue
 
-                    if r40['Sector'] != 'Sin clasificar':
-                        candidatos_filtrados = candidatos_50[(candidatos_50['Sector'] == r40['Sector']) | (candidatos_50['Sector'] == 'Sin clasificar')]
-                        if not candidatos_filtrados.empty: candidatos_50 = candidatos_filtrados
+                    # if r40['Sector'] != 'Sin clasificar':
+                    #     candidatos_filtrados = candidatos_50[(candidatos_50['Sector'] == r40['Sector']) | (candidatos_50['Sector'] == 'Sin clasificar')]
+                    #     if not candidatos_filtrados.empty: candidatos_50 = candidatos_filtrados
 
                     candidatos_50['_dif_dias'] = (candidatos_50['Fecha_F'] - r40['Fecha_F']).dt.days.abs().fillna(999)
                     candidatos_50 = candidatos_50[candidatos_50['_dif_dias'] == 0]
@@ -810,9 +810,9 @@ if archivo_subido is not None:
                     ].copy()
                     if candidatos_50.empty: continue
 
-                    if r40['Sector'] != 'Sin clasificar':
-                        candidatos_filtrados = candidatos_50[(candidatos_50['Sector'] == r40['Sector']) | (candidatos_50['Sector'] == 'Sin clasificar')]
-                        if not candidatos_filtrados.empty: candidatos_50 = candidatos_filtrados
+                    # if r40['Sector'] != 'Sin clasificar':
+                    #     candidatos_filtrados = candidatos_50[(candidatos_50['Sector'] == r40['Sector']) | (candidatos_50['Sector'] == 'Sin clasificar')]
+                    #     if not candidatos_filtrados.empty: candidatos_50 = candidatos_filtrados
 
                     candidatos_50['_dif_dias'] = (candidatos_50['Fecha_F'] - r40['Fecha_F']).dt.days.abs().fillna(999)
                     candidatos_50 = candidatos_50[candidatos_50['_dif_dias'] <= TOPE_DIAS_ALERTA]
