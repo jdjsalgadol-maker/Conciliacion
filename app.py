@@ -199,19 +199,28 @@ if archivo_subido is not None:
                     "20235651": "Dist Pasto", "15536170": "Dist Pasto", "17549197": "Dist Pasto",
                     "17608605": "Dist Pasto", "17968405": "VENTA EN LINEA"
                 }
-                mapeo_datafono_ref = {
-                    "11760923": "3001", "11761277": "3002", "11761293": "3003", "11761327": "3004",
-                    "11761301": "3005", "12273934": "3006", "11761319": "3007", "12273900": "3008",
-                    "12273926": "3009", "14632012": "3010", "15186547": "3011", "13048756": "3012",
-                    "15186539": "3013", "16219602": "3200", "16591240": "3201", "16634586": "3202",
-                    "14885164": "2005", "19827765": "3203", "11761350": "2001", "12161154": "2002",
-                    "14294946": "2003", "15926645": "2210", "11831583": "4002", "12161162": "4001",
-                    "12161121": "4003", "12161139": "4004", "12874475": "4005", "15190309": "4006",
-                    "14468144": "4006", "12500773": "4008", "14468151": "4009", "14651459": "4010",
-                    "15444946": "4200", "16062176": "4253", "20836698": "4007", "72806854": "4203",
-                    "20719829": "4201", "15536188": "6101", "12637294": "6102", "11844685": "6103",
-                    "15536170": "6106", "17549197": "6108"
-                }
+                # NUEVO MAPEO ESTRICTO SEGUN BD
+                pares_ip = [
+                    ("3001", "11760923"), ("3002", "11761277"), ("3003", "11761293"),
+                    ("3004", "11761327"), ("3005", "11761301"), ("3006", "12273934"),
+                    ("3007", "11761319"), ("3008", "12273900"), ("3009", "12273926"),
+                    ("3010", "14632012"), ("3011", "15186547"), ("3012", "13048756"),
+                    ("3013", "15186539"), ("3200", "16219602"), ("3201", "16591240"),
+                    ("3202", "16634586"), ("2005", "14885164"), ("3203", "19827765"),
+                    ("2001", "11761350"), ("2002", "12161154"), ("2003", "14294946"),
+                    ("2210", "15926645"), ("4002", "11831583"), ("4001", "12161162"),
+                    ("4003", "12161121"), ("4004", "12161139"), ("4005", "12874475"),
+                    ("4006", "15190309"), ("4008", "12500773"), ("4009", "14468151"),
+                    ("4010", "14651459"), ("4200", "15444946"), ("4253", "16062176"),
+                    ("4007", "20836698"), ("4202", "20836698"), ("4203", "72806854"),
+                    ("4201", "20719829"), ("6101", "15536188"), ("6102", "12637294"),
+                    ("6103", "11844685"), ("6106", "15536170"), ("6108", "17549197")
+                ]
+                dict_8_to_list4 = {}
+                for r4, r8 in pares_ip:
+                    if r8 not in dict_8_to_list4:
+                        dict_8_to_list4[r8] = []
+                    dict_8_to_list4[r8].append(r4)
 
                 def clasificar_sector(row):
                     texto_k = str(row.get(col_K, "")) if col_K else ""
@@ -249,13 +258,18 @@ if archivo_subido is not None:
                 df['Sector'] = df.apply(clasificar_sector, axis=1)
 
                 def obtener_ref_homologada(row):
-                    texto = f"{row.get(col_H,'')} {row.get(col_A,'')} {row.get(col_K,'') if col_K else ''} {row.get(col_novedad,'') if col_novedad else ''}".upper()
-                    n8 = re.findall(r' \d{8} ', texto)
+                    texto = f" {row.get(col_H,'')} {row.get(col_A,'')} {row.get(col_K,'') if col_K else ''} {row.get(col_novedad,'') if col_novedad else ''} ".upper()
+                    # 1. Check for valid 8-digit codes
+                    n8 = re.findall(r'\b\d{8}\b', texto)
                     for n in n8:
-                        if n in mapeo_datafono_ref: return mapeo_datafono_ref[n]
-                    n4 = re.findall(r' \d{4} ', texto)
+                        if n in dict_8_to_list4:
+                            return n # Return the 8-digit reference as group ID
+                    # 2. Check for valid 4-digit codes mapping to 8-digit code
+                    n4 = re.findall(r'\b\d{4}\b', texto)
                     for n in n4:
-                        if n in mapeo_datafono_ref.values(): return n
+                        for k8, list_4 in dict_8_to_list4.items():
+                            if n in list_4:
+                                return k8
                     return None
 
                 def es_nequi(row):
@@ -550,34 +564,12 @@ if archivo_subido is not None:
                         for _, fila in con_tol.iterrows(): procesar_grupo_ip(fila, es_exacto=False)
 
                 # ================================================================
-                # PARCHE v33: IP 1 A 1 POR ZONA, VALOR Y FECHA (tolerancia 4 días)
+                # RESTRICCIÓN ESTRICTA IP: Si no homologó arriba, queda bloqueado
                 # ================================================================
                 if usar_ipcb:
-                    ip40_pend = df[(df[col_C].astype(str).str.upper() == 'IP') & (df[col_G] == '40') & (~df['ID_Linea'].isin(usados))].copy()
-                    cb50_pend = df[(df[col_C].astype(str).str.upper() == 'CB') & (df[col_G] == '50') & (~df['ID_Linea'].isin(usados))].copy()
-
-                    for id_ip, fila_ip in ip40_pend.iterrows():
-                        if id_ip in usados: continue
-                        candidatos = cb50_pend[
-                            (cb50_pend[col_banco] == fila_ip[col_banco]) &
-                            (cb50_pend['Sector'] == fila_ip['Sector']) &
-                            (cb50_pend['Abs_I'] == fila_ip['Abs_I']) &
-                            (~cb50_pend['ID_Linea'].isin(usados))
-                        ].copy()
-
-                        if candidatos.empty: continue
-
-                        candidatos['_dif_dias'] = (candidatos['Fecha_F'] - fila_ip['Fecha_F']).dt.days.abs().fillna(999)
-                        candidatos = candidatos[candidatos['_dif_dias'] <= TOPE_DIAS_ALERTA]
-
-                        if len(candidatos) != 1: continue
-
-                        id_cb = candidatos.iloc[0]['ID_Linea']
-                        registrar_pareja_por_fecha(id_ip, id_cb, f'IP/CB 1 a 1 por misma zona {fila_ip["Sector"]}, banco e importe exacto.')
-
-                    ip_sin_resolver = df[(df[col_C].astype(str).str.upper() == 'IP') & (~df['ID_Linea'].isin(usados))]
+                    ip_sin_resolver = df[(df[col_C].astype(str).str.upper() == 'IP') & (df[col_G] == '40') & (~df['ID_Linea'].isin(usados))]
                     for idl in ip_sin_resolver['ID_Linea']:
-                        escribir_comentario(idl, "PDV (IP): requiere referencia homologada de base de datos o coincidencia por Zona.", append=False)
+                        escribir_comentario(idl, "PDV (IP): Sin coincidencia. Requiere referencia homologada estricta según base de datos.", append=False)
 
                 # =====================================================
                 # Regla 8: NEQUI POR TOTALES Y FIFO
@@ -632,8 +624,12 @@ if archivo_subido is not None:
 
                 # =====================================================
                 # Regla 1 — A debe coincidir con H (exacto)
+                # AISLAMIENTO ESTRICTO DE IP: Los docs IP (40) ya NO participarán en las reglas genéricas
                 # =====================================================
-                df_40 = df[(df[col_G] == '40')].copy()
+                if usar_ipcb:
+                    df_40 = df[(df[col_G] == '40') & (df[col_C].astype(str).str.upper() != 'IP')].copy()
+                else:
+                    df_40 = df[(df[col_G] == '40')].copy()
                 df_50 = df[(df[col_G] == '50')].copy()
 
                 def emparejar_1a1_por_llave(sub40, sub50, llave40, llave50, base_txt):
@@ -1059,28 +1055,7 @@ if archivo_subido is not None:
                 # MODO TARDE (SEGUNDA PASADA PROFUNDA T1 - T6)
                 # =====================================================
                 if modo_tarde:
-                    if usar_ipcb:
-                        p40_ip = df[(df[col_G] == '40') & (df[col_C].astype(str).str.upper() == 'IP') & (~df['ID_Linea'].isin(usados))]
-                        p50 = df[(df[col_G] == '50') & (~df['ID_Linea'].isin(usados))]
-                        for id40, f40 in p40_ip.iterrows():
-                            if id40 in usados: continue
-                            cand = p50[(p50['Abs_I'] == f40['Abs_I']) & (~p50['ID_Linea'].isin(usados))].copy()
-                            if cand.empty: continue
-                            if f40['Sector'] != 'Sin clasificar':
-                                cand = cand[(cand['Sector'] == f40['Sector']) | (cand['Sector'] == 'Sin clasificar')]
-                            cand['_dif_dias'] = (cand['Fecha_F'] - f40['Fecha_F']).dt.days.abs().fillna(999)
-                            cand = cand[cand['_dif_dias'] <= TOPE_DIAS_ALERTA]
-                            cand = cand.sort_values('_dif_dias')
-                            if not cand.empty:
-                                id50 = cand.iloc[0]['ID_Linea']
-                                dif_d = cand.iloc[0]['_dif_dias']
-                                est = 'Conciliado (Tarde) - IP sin banco' if dif_d == 0 else 'Diferencia de fecha (Tarde) - IP sin banco'
-                                for idx in [id40, id50]:
-                                    df.loc[df['ID_Linea'] == idx, 'Estado_Conciliacion'] = est
-                                    df.loc[df['ID_Linea'] == idx, 'Candidatos_Conciliacion'] = f"{formato_linea(id40)} | {formato_linea(id50)}"
-                                    df.loc[df['ID_Linea'] == idx, 'Comentario'] = f"Tarde T1: IP sin comparar banco, dif {int(dif_d)} días."
-                                usados.update([id40, id50])
-                                parejas_registradas.append((id40, id50))
+
 
                     p40 = df[(df[col_G] == '40') & (~df['ID_Linea'].isin(usados))]
                     p50 = df[(df[col_G] == '50') & (~df['ID_Linea'].isin(usados))]
@@ -1425,7 +1400,7 @@ if archivo_subido is not None:
                 # =====================================================
                 # INTERFAZ
                 # =====================================================
-                st.success("¡Conciliación completada con el motor de reglas CLM v37 (Integral + Parcial FIFO)!")
+                st.success("¡Conciliación completada con el motor de reglas CLM v38 (Integral + Nequi FIFO + IP Estricto)!")
                 if not cuadre_ok:
                     st.warning("⚠️ Revisa la pestaña DESCARTADAS, el total de filas no coincide.")
                 for adv in advertencias:
@@ -1442,7 +1417,7 @@ if archivo_subido is not None:
 - <span style="background-color:{COLOR_GRIS}; padding:2px 8px;">Gris: Cruces múltiples IP/CB (Regla 3)</span>
 - <span style="background-color:{COLOR_BLANCO}; padding:2px 8px; border:1px solid #ccc;">Blanco: Pendientes / Otras Sugerencias / Bloqueos por cruces fuera del límite de días</span>
 
-**Novedades v37 (Integral + Parcial FIFO):**
+**Novedades v38 (Integral + Nequi FIFO + IP Estricto):**
 - **Nequi Dinámico:** Reconoce Nequi por rango numérico (Créditos) o por palabras clave / códigos "T", "/", "T-" (Legalizaciones), tolerando errores de escritura.
 - **Desambiguación FIFO en Nequi:** Resuelve automáticamente cruces cuando hay múltiples documentos Nequi del mismo importe y fecha.
 - **Estados y Comentarios simplificados:** La exportación usa frases cortas ("Registrado en otro banco", "Diferencia de fecha") para revisión rápida.
@@ -1463,7 +1438,7 @@ if archivo_subido is not None:
                 st.download_button(
                     label="📥 Descargar Excel con Resultados",
                     data=output.getvalue(),
-                    file_name="Conciliacion_CLM_v37_Integral_Parcial_FIFO.xlsx",
+                    file_name="Conciliacion_CLM_v38_Integral_IP_Estricto.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
 
