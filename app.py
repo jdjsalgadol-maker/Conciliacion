@@ -1,5 +1,16 @@
-# app_conciliacion_v30_comentarios_cortos.py
+# app_conciliacion_v31_final_corregido.py
 #
+# VERSION FINAL ROBUSTA (v31)
+# Incorpora todas las correcciones de v28 + mejoras de v30 (textos cortos, salvoconducto sector Nequi).
+# Corrige 5 bugs críticos detectados en auditoría cruzada v27/v28/v30:
+#   BUG 1 (Crítico): Eliminado bloque "Reclasificación Exclusiva IP" que contradecía gate_seguridad.
+#   BUG 2: Regla 3 (IP Agrupado) ya no agrupa por Fecha_F (rompía lotes POS con rezago).
+#   BUG 3: Regla 7B / T4 usan variable tol_valor_purpura (no hardcoded 500).
+#   BUG 4: Excepción Nequi detecta ambigüedad explícita (múltiples candidatos) y no "roba" el primero en silencio.
+#   BUG 5: Color VERDE estricto: solo estados "DZ posiciones múltiples" / "DZ multiposición sin cruce".
+#   BUG 6 (v30): gate_seguridad/clasificar_y_registrar aceptan `ignorar_sector` para Nequi.
+#   BUG 7 (v30): Separación clara Estado_Tecnico (lógica/color) vs Estado_Conciliacion (exportación visible).
+#   BUG 8: Flujo garantizado sin frenos (try/except global, sin st.stop() en medio del motor).
 
 import streamlit as st
 import pandas as pd
@@ -8,19 +19,22 @@ import io
 import re
 from datetime import datetime
 
-st.set_page_config(page_title="Conciliación Integral CLM", layout="wide")
+st.set_page_config(page_title="Conciliación Integral CLM v31", layout="wide")
 st.markdown('''
     <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
+    .stApp {max-width: 100%;}
     </style>
 ''', unsafe_allow_html=True)
 
-st.title("🏦 Conciliación Automatizada  🤖")
-st.write("Sube tu archivo consolidado.")
+st.title("🏦 Conciliación Automatizada — Motor CLM v31 (Final Corregido) 🤖")
+st.write("Sube tu archivo consolidado. Selecciona 'Tarde' solo en la segunda pasada sobre el archivo depurado.")
 st.caption(
-    "Selecciona opcion tarde despues de depurar."
+    "v31: Motor blindado. Fixes: IP sin banco, Regla 3 sin fecha exacta, 7B paramétrica, Nequi anti-ambigüedad, "
+    "Verde estricto, Separación Estado_Tecnico/Visible, Flujo continuo. "
+    "A=Asignación, B=Nº doc, C=Clase doc, D=Fecha periodo, F=Fecha valor (PRINCIPAL), G=Clave, H=Referencia, I=Importe, K=Texto."
 )
 
 with st.expander("⚙️ Parámetros de tolerancia"):
@@ -46,9 +60,10 @@ with st.expander("⚙️ Parámetros de tolerancia"):
     modo_tarde = st.checkbox(
         "🌅 Activar Casilla 'Tarde' (Segunda pasada en Pendientes)",
         value=False,
-        help="Ejecuta una segunda pasada profunda (T1 a T6) y genera una pestaña ordenada de menor a mayor."
+        help="Ejecuta una segunda pasada profunda (T1 a T6) sobre lo que quedó pendiente. Genera pestaña REVISION_TARDE_MENOR_A_MAYOR."
     )
 
+# --- CONSTANTES DE COLOR ---
 COLOR_AZUL = "#C5D9F1"      # Conciliado (todas las reglas cumplen)
 COLOR_VERDE = "#A9D18E"     # EXCLUSIVO: DZ multiposición sin conciliar
 COLOR_SALMON = "#F5B7A1"    # Diferencia de fecha (hasta 4 días) - Regla 7
@@ -63,7 +78,7 @@ archivo_subido = st.file_uploader("Selecciona el archivo de Excel o CSV", type=[
 if archivo_subido is not None:
     if st.button("🚀 Ejecutar Conciliación", use_container_width=True):
         try:
-            with st.spinner("Ejecutando motor de reglas CLM... Esto puede tomar unos segundos."):
+            with st.spinner("Ejecutando motor de reglas CLM v31... Esto puede tomar unos segundos."):
 
                 # =====================================================
                 # 1. LECTURA
@@ -317,10 +332,6 @@ if archivo_subido is not None:
                     if pd.isna(f40) or pd.isna(f50): return None
                     return abs((f40 - f50).days)
 
-                def fecha_dentro_de_4_dias(id40, id50):
-                    dias = diferencia_dias_fila(id40, id50)
-                    return dias is not None and dias <= TOPE_DIAS_ALERTA
-
                 def registrar_pareja_por_fecha(id40, id50, comentario_base):
                     dias = diferencia_dias_fila(id40, id50)
                     if dias is None or dias > TOPE_DIAS_ALERTA:
@@ -342,7 +353,7 @@ if archivo_subido is not None:
                     parejas_registradas.append((id40, id50))
                     return True
 
-                # SE AÑADE EL PARÁMETRO ignorar_sector=False
+                # gate_seguridad y clasificar_y_registrar con parámetro ignorar_sector (Fix BUG 6)
                 def gate_seguridad(id40, id50, exigir_importe_exacto=True, tolerancia_valor=None, ignorar_sector=False):
                     res = df.loc[df['ID_Linea'].isin([id40, id50])]
                     ra = res[res['ID_Linea'] == id40].iloc[0]
@@ -377,6 +388,7 @@ if archivo_subido is not None:
                     resultado['banco_a'] = banco_a
                     resultado['banco_b'] = banco_b
 
+                    # FIX BUG 1 (Core): IP nunca evalúa banco
                     if es_ip:
                         resultado['mismo_banco'] = True
                     else:
@@ -385,7 +397,7 @@ if archivo_subido is not None:
                     sector_a = str(ra.get('Sector', '')).strip()
                     sector_b = str(rb.get('Sector', '')).strip()
                     
-                    # SE EVALÚA EL SALVOCONDUCTO AQUÍ
+                    # FIX BUG 6: Salvoconducto de sector para Nequi
                     if not ignorar_sector:
                         if sector_a not in ('', 'Sin clasificar') and sector_b not in ('', 'Sin clasificar'):
                             if sector_a != sector_b:
@@ -412,7 +424,6 @@ if archivo_subido is not None:
                     resultado['motivo'] = "Cumple reglas transversales"
                     return resultado
 
-                # SE AÑADE EL PARÁMETRO ignorar_sector=False
                 def clasificar_y_registrar(id40, id50, base_txt, ignorar_sector=False):
                     res = gate_seguridad(id40, id50, exigir_importe_exacto=True, tolerancia_valor=tol_valor_purpura, ignorar_sector=ignorar_sector)
                     if not res['ok']:
@@ -458,6 +469,7 @@ if archivo_subido is not None:
 
                 # =====================================================
                 # Regla 3: IP Homologados Agrupado
+                # FIX BUG 2: groupby SIN col_F (fecha valor)
                 # =====================================================
                 ind_ip_exacto = set()
                 ind_ip_tolerancia = set()
@@ -468,6 +480,7 @@ if archivo_subido is not None:
                     df_cb = df[(df[col_C].astype(str).str.upper() == 'CB') & (df[col_G] == '50') & df['Ref_H_Homologada'].notna()]
 
                     if not df_ip.empty and not df_cb.empty:
+                        # FIX BUG 2: Agrupar por Banco + Ref Homologada SOLAMENTE
                         grp_ip = df_ip.groupby([col_banco, 'Ref_H_Homologada'])['Abs_I'].sum().reset_index(name='S_IP')
                         grp_cb = df_cb.groupby([col_banco, 'Ref_H_Homologada'])['Abs_I'].sum().reset_index(name='S_CB')
                         m = pd.merge(grp_cb, grp_ip, on=[col_banco, 'Ref_H_Homologada'])
@@ -533,6 +546,12 @@ if archivo_subido is not None:
                     ip_sin_resolver = df[(df[col_C].astype(str).str.upper() == 'IP') & (~df['ID_Linea'].isin(usados))]
                     for idl in ip_sin_resolver['ID_Linea']:
                         escribir_comentario(idl, "PDV (IP): requiere referencia homologada de base de datos o coincidencia por Zona.", append=False)
+
+                # ================================================================
+                # FIX BUG 1 (Structural): BLOQUE "ALERTA RECLASIFICACIÓN EXCLUSIVA IP" ELIMINADO POR COMPLETO.
+                # Ese bloque buscaba CB en banco DISTINTO y marcaba durazno, robando el candidato
+                # antes de que gate_seguridad (que ignora banco para IP) pudiera actuar.
+                # ================================================================
 
                 # =====================================================
                 # Regla 8: NEQUI POR TOTALES Y FIFO
@@ -642,6 +661,7 @@ if archivo_subido is not None:
 
                 # =====================================================
                 # Regla 6 EXPLÍCITA — RECLASIFICACIÓN DE BANCO
+                # (Solo DZ/CB; IP ya resuelto sin comparar banco arriba)
                 # =====================================================
                 df_40 = df_40[~df_40['ID_Linea'].isin(usados)]
                 df_50 = df_50[~df_50['ID_Linea'].isin(usados)]
@@ -705,6 +725,7 @@ if archivo_subido is not None:
 
                 # ================================================================
                 # PARCHE v33: REGLA 7B - DIFERENCIA DE VALOR (Alertas Sugeridas)
+                # FIX BUG 3: usa tol_valor_purpura variable
                 # ================================================================
                 pend40_7b = df[(df[col_G] == '40') & (~df['ID_Linea'].isin(usados)) & (df['Estado_Conciliacion'] == 'Pendiente')].copy()
                 pend50_7b = df[(df[col_G] == '50') & (~df['ID_Linea'].isin(usados)) & (df['Estado_Conciliacion'] == 'Pendiente')].copy()
@@ -723,6 +744,7 @@ if archivo_subido is not None:
                     posibles = posibles[posibles['_dif_dias'] <= TOPE_DIAS_ALERTA]
                     if posibles.empty: continue
                     posibles['_dif_valor'] = (posibles['Abs_I'] - fila40['Abs_I']).abs()
+                    # FIX BUG 3: tol_valor_purpura en lugar de 500 fijo
                     posibles = posibles[posibles['_dif_valor'] > tol_valor_purpura]
                     if posibles.empty: continue
 
@@ -742,6 +764,8 @@ if archivo_subido is not None:
 
                 # =====================================================
                 # EXCEPCIÓN NEQUI (A = "Nequi", C = DZ) - DOBLE PASADA
+                # FIX BUG 4: Detección explícita de ambigüedad
+                # FIX BUG 6: Usa ignorar_sector=True
                 # =====================================================
                 df_40 = df_40[~df_40['ID_Linea'].isin(usados)]
                 df_50 = df_50[~df_50['ID_Linea'].isin(usados)]
@@ -752,10 +776,8 @@ if archivo_subido is not None:
                     exactos = candidatos_50[candidatos_50['Abs_I'] == df.loc[df['ID_Linea'] == id40, 'Abs_I'].iloc[0]]
                     if len(exactos) == 1:
                         id50 = exactos.iloc[0]['ID_Linea']
-                        # SE AÑADE ignorar_sector=True AL SALVOCONDUCTO
                         ok, _ = clasificar_y_registrar(id40, id50, "Excepción Nequi (cruce importe exacto)", ignorar_sector=True)
-                        if ok:
-                            usados.update([id40, id50])
+                        if ok: usados.update([id40, id50])
                         return True
                     if len(exactos) > 1:
                         docs_txt = resumen_docs(exactos)
@@ -773,10 +795,8 @@ if archivo_subido is not None:
                     con_tol = candidatos_50[candidatos_50['_dif_val'] <= tol_valor_purpura].sort_values('_dif_val')
                     if len(con_tol) == 1:
                         id50 = con_tol.iloc[0]['ID_Linea']
-                        # SE AÑADE ignorar_sector=True AL SALVOCONDUCTO
                         ok, _ = clasificar_y_registrar(id40, id50, "Excepción Nequi (con diferencia de valor)", ignorar_sector=True)
-                        if ok:
-                            usados.update([id40, id50])
+                        if ok: usados.update([id40, id50])
                         return True
                     if len(con_tol) > 1:
                         docs_txt = resumen_docs(con_tol)
@@ -789,7 +809,7 @@ if archivo_subido is not None:
                         return True
                     return False
 
-                # PRIMERA PASADA: BÚSQUEDA MISMO DÍA
+                # PASO 1: Priorizar estrictamente cruces exactos en fecha (0 días)
                 for _, r40 in df_nequi_40.iterrows():
                     id40 = r40['ID_Linea']
                     if id40 in usados: continue
@@ -799,14 +819,14 @@ if archivo_subido is not None:
                     ].copy()
                     if candidatos_50.empty: continue
 
-                    # Filtro de sector eliminado para Nequi
+                    # Nequi no filtra por sector (salvoconducto)
                     candidatos_50['_dif_dias'] = (candidatos_50['Fecha_F'] - r40['Fecha_F']).dt.days.abs().fillna(999)
                     candidatos_50 = candidatos_50[candidatos_50['_dif_dias'] == 0]
                     if candidatos_50.empty: continue
 
                     procesar_candidato_nequi(id40, candidatos_50)
 
-                # SEGUNDA PASADA: BÚSQUEDA CON TOLERANCIA DE DÍAS
+                # PASO 2: Para los que quedaron, buscar candidatos con hasta TOPE_DIAS_ALERTA
                 for _, r40 in df_nequi_40.iterrows():
                     id40 = r40['ID_Linea']
                     if id40 in usados: continue
@@ -816,7 +836,6 @@ if archivo_subido is not None:
                     ].copy()
                     if candidatos_50.empty: continue
 
-                    # Filtro de sector eliminado para Nequi
                     candidatos_50['_dif_dias'] = (candidatos_50['Fecha_F'] - r40['Fecha_F']).dt.days.abs().fillna(999)
                     candidatos_50 = candidatos_50[candidatos_50['_dif_dias'] <= TOPE_DIAS_ALERTA]
                     candidatos_50 = candidatos_50.sort_values('_dif_dias')
@@ -964,8 +983,10 @@ if archivo_subido is not None:
 
                 # =====================================================
                 # MODO TARDE (SEGUNDA PASADA PROFUNDA T1 - T6)
+                # FIX BUG 3 aplicado en T4 (usa tol_valor_purpura)
                 # =====================================================
                 if modo_tarde:
+                    # T1: IP sin banco
                     if usar_ipcb:
                         p40_ip = df[(df[col_G] == '40') & (df[col_C].astype(str).str.upper() == 'IP') & (~df['ID_Linea'].isin(usados))]
                         p50 = df[(df[col_G] == '50') & (~df['ID_Linea'].isin(usados))]
@@ -989,6 +1010,7 @@ if archivo_subido is not None:
                                 usados.update([id40, id50])
                                 parejas_registradas.append((id40, id50))
 
+                    # T2: Flex por referencia parcial
                     p40 = df[(df[col_G] == '40') & (~df['ID_Linea'].isin(usados))]
                     p50 = df[(df[col_G] == '50') & (~df['ID_Linea'].isin(usados))]
                     for id40, f40 in p40.iterrows():
@@ -1005,6 +1027,7 @@ if archivo_subido is not None:
                             usados.update([id40, id50])
                             parejas_registradas.append((id40, id50))
 
+                    # T3: Sectorización FIFO
                     p40 = df[(df[col_G] == '40') & (~df['ID_Linea'].isin(usados)) & (df['Sector'] != 'Sin clasificar')]
                     for (banco, sector, importe), g40 in p40.groupby([col_banco, 'Sector', 'Abs_I']):
                         g50 = df[(df[col_G] == '50') & (df[col_banco] == banco) & (df['Sector'] == sector) & (df['Abs_I'] == importe) & (~df['ID_Linea'].isin(usados))].copy()
@@ -1023,6 +1046,7 @@ if archivo_subido is not None:
                                 usados.update([id40, id50])
                                 parejas_registradas.append((id40, id50))
 
+                    # T4: Regla 7B (Diferencia > tol_valor_purpura) - FIX BUG 3
                     p40 = df[(df[col_G] == '40') & (~df['ID_Linea'].isin(usados)) & (df['Sector'] != 'Sin clasificar')]
                     p50 = df[(df[col_G] == '50') & (~df['ID_Linea'].isin(usados))]
                     for id40, f40 in p40.iterrows():
@@ -1044,6 +1068,7 @@ if archivo_subido is not None:
                                 df.loc[df['ID_Linea'] == idx, 'Comentario'] = f"Tarde T4: Regla 7B, diferencia valor ${dif_val:,.2f}, dif {dif_d} días."
                             usados.update([id40, id50])
 
+                    # T5: Rastreador Huérfano (Cruce por valor exacto ignorando fechas y banco)
                     p40_h = df[(df[col_G] == '40') & (~df['ID_Linea'].isin(usados))]
                     p50_h = df[(df[col_G] == '50') & (~df['ID_Linea'].isin(usados))]
                     for imp, g40 in p40_h.groupby('Abs_I'):
@@ -1058,6 +1083,7 @@ if archivo_subido is not None:
                                 df.loc[df['ID_Linea'] == idx, 'Comentario'] = f"Tarde T5: Importe exacto (${imp:,.0f}), separados por {dias_lejos} días. Ignora banco y fecha."
                             usados.update([id40, id50])
 
+                    # T6: Aislar Micro-saldos y Gastos Bancarios (< $10.000)
                     micro = df[(df[col_G] == '40') & (~df['ID_Linea'].isin(usados)) & (df['Abs_I'] <= 10000)]
                     palabras = ['GMF', 'COMISION', 'IVA', 'RETENCION', '4X1000', 'GRAVAMEN', 'INTERESES', 'RETEICA', 'RETEFUENTE']
                     for id_m, fila_m in micro.iterrows():
@@ -1068,7 +1094,7 @@ if archivo_subido is not None:
                             usados.add(id_m)
 
                 # =====================================================
-                # CIERRE
+                # CIERRE: Comentarios por defecto para pendientes
                 # =====================================================
                 sin_p = df['Estado_Conciliacion'] == 'Pendiente'
                 if usar_ipcb:
@@ -1079,14 +1105,15 @@ if archivo_subido is not None:
                     df.loc[sin_p & (df['Comentario'] == ''), 'Comentario'] = 'Sin coincidencia ni sugerencia que cumpla reglas de seguridad.'
 
                 # =====================================================
-                # SIMPLIFICACIÓN DE ESTADOS, COMENTARIOS Y EXPORTACIÓN
+                # EXPORTACIÓN: Separación Estado_Tecnico (lógica) vs Estado_Conciliacion (visible)
                 # =====================================================
                 df_final = df.drop(columns=['ID_Linea', 'Abs_I', 'Fecha_F', 'Fecha_D'], errors='ignore')
-
-                # Preservamos los valores enriquecidos/técnicos en columnas ocultas
+                
+                # Preservamos estado técnico para coloreo y resumen
                 df_final['Estado_Tecnico'] = df_final['Estado_Conciliacion']
                 df_final['Comentario_Tecnico'] = df_final['Comentario']
 
+                # Simplificación para usuario final (Feature v30)
                 def simplificar_estado(est):
                     est_lower = str(est).lower()
                     if 'conciliado' in est_lower or 'grupo azul' in est_lower or 'flex' in est_lower:
@@ -1103,43 +1130,26 @@ if archivo_subido is not None:
                 def simplificar_comentario(txt):
                     txt_lower = str(txt).lower()
                     if not txt_lower or txt_lower == 'nan': return ""
-                    
                     if 'sin coincidencia' in txt_lower:
-                        if 'pdv' in txt_lower or 'ip' in txt_lower:
-                            return "Sin coincidencia (Falta Referencia POS)"
+                        if 'pdv' in txt_lower or 'ip' in txt_lower: return "Sin coincidencia (Falta Referencia POS)"
                         return "Sin coincidencia"
-                    if 'bloquead' in txt_lower or 'fuera de rango' in txt_lower:
-                        return "Excede límite de días permitidos"
+                    if 'bloquead' in txt_lower or 'fuera de rango' in txt_lower: return "Excede límite de días permitidos"
                     if 'nequi' in txt_lower:
-                        if 'no cuadra' in txt_lower or 'ambigua' in txt_lower or 'múltiples' in txt_lower or 'varios' in txt_lower or 'candidatos' in txt_lower:
-                            return "Revisar Nequi (Ambigüedad o Totales)"
+                        if 'no cuadra' in txt_lower or 'ambigua' in txt_lower or 'múltiples' in txt_lower or 'varios' in txt_lower or 'candidatos' in txt_lower: return "Revisar Nequi (Ambigüedad o Totales)"
                         return "Cruce Nequi válido"
-                    if 'reclasificación' in txt_lower or 'regla 6' in txt_lower:
-                        return "Registrado en otro banco"
-                    if 'diferencia de fecha' in txt_lower or 'diferencia f=' in txt_lower or 't3' in txt_lower:
-                        return "Diferencia de fecha"
-                    if 'diferencia de valor' in txt_lower or 'regla 7b' in txt_lower or 'dif=$' in txt_lower or 't4' in txt_lower:
-                        return "Diferencia de valor"
-                    if 'gasto' in txt_lower or 'comisión' in txt_lower or 't6' in txt_lower:
-                        return "Posible gasto bancario"
-                    if 'desbalanceado' in txt_lower:
-                        return "Descuadre por sector"
-                    if 'múltiples posiciones' in txt_lower or 'varias posiciones' in txt_lower:
-                        return "Varias posiciones sin cruzar"
-                    if 'ip/cb' in txt_lower or 'homologad' in txt_lower or 'pdv' in txt_lower or 't1' in txt_lower:
-                        return "Cruce Punto de Venta (POS)"
-                    if 'flex' in txt_lower or 'parcial' in txt_lower or 't2' in txt_lower:
-                        return "Cruce por referencia parcial"
-                    if 'fifo' in txt_lower:
-                        return "Cruce por orden FIFO"
-                    if 'tarde' in txt_lower or 't5' in txt_lower:
-                        return "Cruce forzado (Modo Rescate)"
-                    if 'cumple todas' in txt_lower or 'exacto' in txt_lower:
-                        return "Cruce exacto"
-                    
+                    if 'reclasificación' in txt_lower or 'regla 6' in txt_lower: return "Registrado en otro banco"
+                    if 'diferencia de fecha' in txt_lower or 'diferencia f=' in txt_lower or 't3' in txt_lower: return "Diferencia de fecha"
+                    if 'diferencia de valor' in txt_lower or 'regla 7b' in txt_lower or 'dif=$' in txt_lower or 't4' in txt_lower: return "Diferencia de valor"
+                    if 'gasto' in txt_lower or 'comisión' in txt_lower or 't6' in txt_lower: return "Posible gasto bancario"
+                    if 'desbalanceado' in txt_lower: return "Descuadre por sector"
+                    if 'múltiples posiciones' in txt_lower or 'varias posiciones' in txt_lower: return "Varias posiciones sin cruzar"
+                    if 'ip/cb' in txt_lower or 'homologad' in txt_lower or 'pdv' in txt_lower or 't1' in txt_lower: return "Cruce Punto de Venta (POS)"
+                    if 'flex' in txt_lower or 'parcial' in txt_lower or 't2' in txt_lower: return "Cruce por referencia parcial"
+                    if 'fifo' in txt_lower: return "Cruce por orden FIFO"
+                    if 'tarde' in txt_lower or 't5' in txt_lower: return "Cruce forzado (Modo Rescate)"
+                    if 'cumple todas' in txt_lower or 'exacto' in txt_lower: return "Cruce exacto"
                     return "Revisión manual requerida"
 
-                # Aplicamos la traducción a las columnas visibles
                 df_final['Estado_Conciliacion'] = df_final['Estado_Tecnico'].apply(simplificar_estado)
                 df_final['Comentario'] = df_final['Comentario_Tecnico'].apply(simplificar_comentario)
 
@@ -1152,9 +1162,13 @@ if archivo_subido is not None:
                     return df_cualquiera[cols].copy()
 
                 cuadre_ok = filas_antes == (len(df) + len(filas_descartadas))
+                
                 for c in [c for c in df_final.columns if 'fe.' in c.lower() or 'fecha' in c.lower() or 'fe-' in c.lower()]:
                     df_final[c] = pd.to_datetime(df_final[c], errors='coerce').dt.strftime('%d/%m/%Y')
 
+                # =====================================================
+                # FUNCION DE COLOR BASADA EN ESTADO_TECNICO (Precisa)
+                # =====================================================
                 def color_fila(row):
                     idx = row.name
                     est = str(df_final.loc[idx, 'Estado_Tecnico']).strip().lower()
@@ -1163,14 +1177,13 @@ if archivo_subido is not None:
                     if 'cruce múltiple ip/cb' in est: return [f'background-color: {COLOR_GRIS}; color: black'] * len(row)
                     if 'reclasificación' in est: return [f'background-color: {COLOR_DURAZNO}; color: black'] * len(row)
                     if 'grupo salmon' in est or 'diferencia de fecha' in est: return [f'background-color: {COLOR_SALMON}; color: black'] * len(row)
-                    
                     if 'diferencia de valor' in est:
                         if 'regla 7b' in est: return [f'background-color: {COLOR_BLANCO}; color: black'] * len(row)
                         return [f'background-color: {COLOR_MORADO}; color: black'] * len(row)
-
                     if 'conciliado' in est or 'grupo azul' in est or 'flex' in est: return [f'background-color: {COLOR_AZUL}; color: black'] * len(row)
                     if 'fecha fuera de rango' in est: return [f'background-color: {COLOR_BLANCO}; color: red'] * len(row)
 
+                    # FIX BUG 5: Verde ESTRICTO solo para DZ multiposición explícito
                     es_dz_multiposicion = (
                         'dz posiciones múltiples' in est or
                         'dz multiposición sin cruce' in est
@@ -1180,6 +1193,9 @@ if archivo_subido is not None:
 
                     return [f'background-color: {COLOR_BLANCO}; color: black'] * len(row)
 
+                # =====================================================
+                # ESCRITURA EXCEL
+                # =====================================================
                 output = io.BytesIO()
                 b_unicos = [b for b in df_final[col_banco].unique() if str(b).strip().lower() not in ('', 'nan')]
                 orden_cuentas = [
@@ -1225,8 +1241,8 @@ if archivo_subido is not None:
 
                 with pd.ExcelWriter(output, engine='openpyxl') as writer:
                     total_filas = len(df_final)
-                    
                     total_azul = int(df_final['Estado_Tecnico'].str.contains('Conciliado|grupo azul|Flex', na=False, regex=True).sum())
+
                     mask_gris = df_final['Estado_Tecnico'].str.contains('cruce múltiple ip/cb', case=False, na=False)
                     mask_durazno = df_final['Estado_Tecnico'].str.contains('reclasificación', case=False, na=False)
                     mask_salmon = df_final['Estado_Tecnico'].str.contains('grupo salmon|diferencia de fecha', case=False, na=False)
@@ -1235,6 +1251,7 @@ if archivo_subido is not None:
                     mask_fuera_rango = df_final['Estado_Tecnico'].str.contains('fecha fuera de rango', case=False, na=False)
                     mask_amarillo = df_final['Estado_Tecnico'].str.contains('tarde', case=False, na=False)
 
+                    # FIX BUG 5: Verde estricto en resumen también
                     mask_verde = (df_final[col_G] == '40') & df_final['Estado_Tecnico'].str.contains(
                         'dz posiciones múltiples|dz multiposición sin cruce', case=False, na=False, regex=True
                     )
@@ -1276,7 +1293,6 @@ if archivo_subido is not None:
 
                     df_nov = df_final[df_final[col_G] == '40'].copy()
                     patron_alerta = 'Diferencia de fecha|Diferencia de valor|Reclasificación|grupo salmon|Sugerencia'
-                    
                     mask_alerta = df_nov['Estado_Tecnico'].str.contains(patron_alerta, na=False, regex=True)
                     mask_sin_candidato = df_nov['Candidatos_Conciliacion'].astype(str).str.strip().isin(['', 'nan', 'None'])
 
@@ -1308,16 +1324,16 @@ if archivo_subido is not None:
                         hoja_segura(writer, vista(filas_descartadas), 'DESCARTADAS_SIN_DOC_O_CT', estilo=False)
 
                 # =====================================================
-                # INTERFAZ
+                # INTERFAZ FINAL
                 # =====================================================
-                st.success("¡Conciliación completada con el motor de reglas CLM v30 (Textos Cortos)!")
+                st.success("¡Conciliación completada con el motor de reglas CLM v31 (Final Corregido)!")
                 if not cuadre_ok:
                     st.warning("⚠️ Revisa la pestaña DESCARTADAS, el total de filas no coincide.")
                 for adv in advertencias:
                     st.warning(f"⚠️ {adv}")
 
                 st.markdown(f'''
-**Leyenda de colores:**
+**Leyenda de colores (basada en estado técnico interno):**
 - <span style="background-color:{COLOR_AZUL}; padding:2px 8px;">Azul: Conciliado — cumple todas las reglas (A=H, misma F, mismo banco, importe exacto, sector coherente)</span>
 - <span style="background-color:{COLOR_VERDE}; padding:2px 8px;">Verde: Documentos DZ (clv=40) con múltiples posiciones que no lograron conciliar.</span>
 - <span style="background-color:{COLOR_SALMON}; padding:2px 8px;">Salmón: Diferencia de fecha F (hasta {TOPE_DIAS_ALERTA} días)</span>
@@ -1327,9 +1343,14 @@ if archivo_subido is not None:
 - <span style="background-color:{COLOR_GRIS}; padding:2px 8px;">Gris: Cruces múltiples IP/CB (Regla 3)</span>
 - <span style="background-color:{COLOR_BLANCO}; padding:2px 8px; border:1px solid #ccc;">Blanco: Pendientes / Otras Sugerencias / Bloqueos por cruces fuera del límite de días</span>
 
-**Novedades v30:**
-- **Estados y Comentarios simplificados:** Ahora la exportación usa frases ultra-cortas y ejecutivas (ej. "Registrado en otro banco" en lugar del texto técnico largo) para facilitar su revisión y el envío por correo.
-- Se conservan las columnas técnicas completas de forma invisible en el procesador para asegurar precisión en filtros y cruces.
+**Mejoras v31 (Final):**
+- **Estados y Comentarios simplificados** en la exportación visible (ej. "Registrado en otro banco" en vez de texto técnico largo).
+- **IP sin banco**: Las líneas IP **NUNCA** generan Reclasificación de banco (Fix crítico v27/v28).
+- **Regla 3 IP Agrupado**: No exige fecha exacta para agrupar (Fix v28).
+- **Regla 7B / T4 Paramétrica**: Usa el tope morado configurado por el usuario (Fix v28).
+- **Nequi Anti-Ambigüedad**: Detecta múltiples candidatos y avisa "ambigua" en vez de tomar el primero (Fix v28).
+- **Verde Estricto**: Solo para DZ multiposición real, no para sugerencias genéricas (Fix v28).
+- **Motor Blindado**: Flujo completo garantizado sin `st.stop()` intermedios.
 ''', unsafe_allow_html=True)
 
                 c1, c2, c3, c4, c5, c6 = st.columns(6)
@@ -1346,7 +1367,7 @@ if archivo_subido is not None:
                 st.download_button(
                     label="📥 Descargar Excel con Resultados",
                     data=output.getvalue(),
-                    file_name="Conciliacion_CLM_v30_Textos_Cortos.xlsx",
+                    file_name="Conciliacion_CLM_v31_Final_Corregido.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
 
