@@ -1,23 +1,3 @@
-# app_conciliacion_v35_nequi_fifo_desambiguado.py
-#
-# VERSION v35: Corrige el caso detectado con los documentos
-# 1400086790, 1400086661, 1400086776, 1400086798 (DZ, legalizaciones
-# Nequi) vs 100900849, 100900846, 100900845, 100900844 (CB, $100.000
-# cada uno). En v34, cuando la Excepcion Nequi encontraba MAS DE UN
-# candidato con el mismo importe exacto, banco y fecha, marcaba
-# "Sugerencia - Excepcion Nequi ambigua" y NO conciliaba, porque no
-# habia forma segura de saber cual candidato correspondia a cual.
-#
-# FIX v35: antes de declarar "ambigua", se intenta primero un
-# DESEMPATE POR FIFO: si hay N lineas DZ Nequi y M lineas CB Nequi
-# con el MISMO importe exacto, mismo banco y mismo dia, y ademas
-# N == M (misma cantidad de candidatos de cada lado), se ordenan
-# ambos lados por Numero de documento (columna B) y se emparejan
-# 1 a 1 en ese orden, igual que el "FIFO controlado" ya usado para
-# DZ/CB genericos. Solo si N != M (cantidades distintas) se mantiene
-# el estado "ambigua" para revision manual, porque ahi si existe
-# riesgo real de emparejar mal.
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -26,7 +6,7 @@ import re
 from difflib import SequenceMatcher
 from datetime import datetime
 
-st.set_page_config(page_title="Conciliación Integral CLM v35", layout="wide")
+st.set_page_config(page_title="Conciliación Integral CLM v01", layout="wide")
 st.markdown('''
     <style>
     #MainMenu {visibility: hidden;}
