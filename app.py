@@ -282,8 +282,8 @@ if archivo_subido is not None:
 
                     # 2. Validación para Legalizaciones (C = DZ y G = 40)
                     if val_g == '40' and val_c == 'DZ':
-                        # Exige que el rango se cumpla Y que exista el indicador (palabra o código en A)
-                        if is_h_nequi_range and es_indicador_texto:
+                        # SOLO requiere el indicador de texto (no rango numérico en H)
+                        if es_indicador_texto:
                             return True
                         return False
 
@@ -788,43 +788,29 @@ if archivo_subido is not None:
 
                 def procesar_candidato_nequi(id40, candidatos_50):
                     exactos = candidatos_50[candidatos_50['Abs_I'] == df.loc[df['ID_Linea'] == id40, 'Abs_I'].iloc[0]]
-                    if len(exactos) == 1:
+                    if len(exactos) >= 1:
                         id50 = exactos.iloc[0]['ID_Linea']
+                        base_txt = "Excepción Nequi (cruce importe exacto)" if len(exactos) == 1 else "Excepción Nequi (cruce importe exacto por orden FIFO)"
                         # SE AÑADE ignorar_sector=True AL SALVOCONDUCTO
-                        ok, _ = clasificar_y_registrar(id40, id50, "Excepción Nequi (cruce importe exacto)", ignorar_sector=True)
+                        ok, _ = clasificar_y_registrar(id40, id50, base_txt, ignorar_sector=True)
                         if ok:
                             usados.update([id40, id50])
-                        return True
-                    if len(exactos) > 1:
-                        docs_txt = resumen_docs(exactos)
-                        df.loc[df['ID_Linea'] == id40, 'Estado_Conciliacion'] = 'Sugerencia - Excepción Nequi ambigua'
-                        df.loc[df['ID_Linea'] == id40, 'Candidatos_Conciliacion'] = f"{formato_linea(id40)} | Candidatos posibles: {docs_txt}"
-                        df.loc[df['ID_Linea'] == id40, 'Comentario'] = (
-                            f"Excepción Nequi: {len(exactos)} candidatos con importe exacto, "
-                            "requiere selección manual (no se concilia automático por ambigüedad)."
-                        )
                         return True
 
                     r40 = df.loc[df['ID_Linea'] == id40].iloc[0]
                     candidatos_50 = candidatos_50.copy()
                     candidatos_50['_dif_val'] = (candidatos_50['Abs_I'] - r40['Abs_I']).abs()
                     con_tol = candidatos_50[candidatos_50['_dif_val'] <= tol_valor_purpura].sort_values('_dif_val')
-                    if len(con_tol) == 1:
+                    
+                    if len(con_tol) >= 1:
                         id50 = con_tol.iloc[0]['ID_Linea']
+                        base_txt = "Excepción Nequi (con diferencia de valor)" if len(con_tol) == 1 else "Excepción Nequi (con diferencia de valor, orden FIFO)"
                         # SE AÑADE ignorar_sector=True AL SALVOCONDUCTO
-                        ok, _ = clasificar_y_registrar(id40, id50, "Excepción Nequi (con diferencia de valor)", ignorar_sector=True)
+                        ok, _ = clasificar_y_registrar(id40, id50, base_txt, ignorar_sector=True)
                         if ok:
                             usados.update([id40, id50])
                         return True
-                    if len(con_tol) > 1:
-                        docs_txt = resumen_docs(con_tol)
-                        df.loc[df['ID_Linea'] == id40, 'Estado_Conciliacion'] = 'Sugerencia - Excepción Nequi ambigua'
-                        df.loc[df['ID_Linea'] == id40, 'Candidatos_Conciliacion'] = f"{formato_linea(id40)} | Candidatos posibles: {docs_txt}"
-                        df.loc[df['ID_Linea'] == id40, 'Comentario'] = (
-                            f"Excepción Nequi: {len(con_tol)} candidatos con diferencia de valor dentro del tope morado, "
-                            "requiere selección manual (no se concilia automático por ambigüedad)."
-                        )
-                        return True
+                        
                     return False
 
                 # PRIMERA PASADA: BÚSQUEDA MISMO DÍA
