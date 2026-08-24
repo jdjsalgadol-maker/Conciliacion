@@ -1,14 +1,23 @@
-# app_conciliacion_v32_nequi_rangos.py
+# app_conciliacion_v33_nequi_rangos_estructural.py
 #
-# VERSION v32: Actualización de la regla NEQUI.
-# La detección de NEQUI ahora requiere que la Referencia (col_H) esté en
-# uno de los rangos numéricos oficiales:
-#   - 100.000 a 9.999.999      (6-7 dígitos)
-#   - 1.000.000.000 a 1.399.999.999  (10 dígitos, empiezan por 10-13)
-# Además se conservan las heurísticas textuales previas (texto "NEQUI",
-# Asignación "T", "T-", "T/", "/") como condición SUFICIENTE alternativa.
-# Si NO se cumple ninguna, la línea NO entra en reglas NEQUI (Regla 8,
-# Excepción Nequi, Flex Nequi, etc.) y sigue el flujo normal DZ/CB.
+# VERSION v33: Refinamiento estructural de la regla NEQUI (sobre v32).
+#
+# El rango numérico en H (100.000-9.999.999 o 1.000.000.000-1.399.999.999)
+# ya NO se aplica de forma global a cualquier fila. Ahora se exige que la
+# fila cumpla también con la posición estructural correcta:
+#
+#   - Si Clave contabiliz. (G) = "50"  -> se evalúa el rango en H
+#     (documentos del lado banco/CB, cualquier Clase de documento).
+#   - Si Clase de documento (C) = "DZ" y Clave contabiliz. (G) = "40" ->
+#     se evalúa el rango en H (legalizaciones, lado débito).
+#   - Cualquier otra combinación de C/G (por ejemplo IP, o DZ con G distinto
+#     de 40) NO activa Nequi por rango numérico, así el valor de H esté
+#     dentro del rango. Evita falsos positivos en líneas que no son
+#     estructuralmente Nequi.
+#
+# La heurística textual previa (texto "NEQUI" en K/A/H, o Asignación
+# "T","T-","T/","/") se mantiene como condición suficiente alternativa,
+# independiente de la clase/clave, porque es una marca explícita del dato.
 
 import streamlit as st
 import pandas as pd
@@ -17,7 +26,7 @@ import io
 import re
 from datetime import datetime
 
-st.set_page_config(page_title="Conciliación Integral CLM v32", layout="wide")
+st.set_page_config(page_title="Conciliación Integral CLM v33", layout="wide")
 st.markdown('''
     <style>
     #MainMenu {visibility: hidden;}
@@ -27,11 +36,10 @@ st.markdown('''
     </style>
 ''', unsafe_allow_html=True)
 
-st.title("🏦 Conciliación Automatizada — Motor CLM v32 (Nequi Rangos) 🤖")
+st.title("🏦 Conciliación Automatizada — Motor CLM v33 (Nequi Rangos + Estructura C/G) 🤖")
 st.write("Sube tu archivo consolidado. Selecciona 'Tarde' solo en la segunda pasada sobre el archivo depurado.")
 st.caption(
-    "v32: Nequi solo si Referencia (H) en rangos 100.000-9.999.999 o 1.000.000.000-1.399.999.999 "
-    "(o heurística textual). Resto de fixes v31 incluidos. "
+    "v33: Nequi por rango en H solo si (G='50') o (C='DZ' y G='40'); o heurística textual. "
     "A=Asignación, B=Nº doc, C=Clase doc, D=Fecha periodo, F=Fecha valor (PRINCIPAL), G=Clave, H=Referencia, I=Importe, K=Texto."
 )
 
@@ -76,7 +84,7 @@ archivo_subido = st.file_uploader("Selecciona el archivo de Excel o CSV", type=[
 if archivo_subido is not None:
     if st.button("🚀 Ejecutar Conciliación", use_container_width=True):
         try:
-            with st.spinner("Ejecutando motor de reglas CLM v32... Esto puede tomar unos segundos."):
+            with st.spinner("Ejecutando motor de reglas CLM v33... Esto puede tomar unos segundos."):
 
                 # =====================================================
                 # 1. LECTURA
@@ -262,14 +270,21 @@ if archivo_subido is not None:
                     return None
 
                 # =====================================================
-                # DETECCIÓN NEQUI v32: Rangos numéricos en H + heurísticas textuales
-                # Rangos válidos:
-                #   100.000 - 9.999.999          (6-7 dígitos)
-                #   1.000.000.000 - 1.399.999.999 (10 dígitos, 10xx-13xx)
-                # Además: texto "NEQUI" en K/A/H, o Asignación "T", "T-", "T/", "/"
+                # DETECCIÓN NEQUI v33: Rango numérico en H + posición estructural C/G
+                #
+                # El rango numérico en H (100.000-9.999.999 o
+                # 1.000.000.000-1.399.999.999) SOLO activa Nequi si la fila
+                # cumple con la posición estructural correcta:
+                #   - G == '50'                      -> aplica (lado banco/CB)
+                #   - C == 'DZ' y G == '40'           -> aplica (legalización, lado débito)
+                #   - cualquier otra combinación (IP, DZ con G != 40, etc.)
+                #     NO activa Nequi por rango, aunque H esté en rango.
+                #
+                # La heurística textual (texto "NEQUI", Asignación T/T-/T//)
+                # sigue siendo condición suficiente independiente de C/G.
                 # =====================================================
-                def es_nequi_v32(row):
-                    # 1) Heurística textual (condición suficiente)
+                def es_nequi_v33(row):
+                    # 1) Heurística textual (condición suficiente, independiente de C/G)
                     texto = f"{row.get(col_K,'') if col_K else ''} {row.get(col_A,'')} {row.get(col_H,'')}".upper()
                     if 'NEQUI' in texto:
                         return True
@@ -277,17 +292,28 @@ if archivo_subido is not None:
                     if val_a == 'T' or val_a.startswith('T-') or val_a.startswith('T/') or val_a == '/':
                         return True
 
-                    # 2) Rangos numéricos en Referencia (H)
+                    # 2) Rango numérico en H, condicionado a posición estructural C/G
                     h_raw = str(row.get(col_H, '')).strip()
                     h_clean = re.sub(r'\.0$', '', h_raw)
-                    if h_clean.isdigit():
-                        h_num = int(h_clean)
-                        # Rango 1: 100.000 a 9.999.999
-                        if 100_000 <= h_num <= 9_999_999:
-                            return True
-                        # Rango 2: 1.000.000.000 a 1.399.999.999
-                        if 1_000_000_000 <= h_num <= 1_399_999_999:
-                            return True
+                    if not h_clean.isdigit():
+                        return False
+
+                    h_num = int(h_clean)
+                    en_rango = (100_000 <= h_num <= 9_999_999) or (1_000_000_000 <= h_num <= 1_399_999_999)
+                    if not en_rango:
+                        return False
+
+                    g_val = str(row.get(col_G, '')).strip()
+                    c_val = str(row.get(col_C, '')).strip().upper() if usar_ipcb else ''
+
+                    # Documentos con Clave contabiliz. = 50 (lado banco/CB)
+                    if g_val == '50':
+                        return True
+
+                    # Legalizaciones: Clase de documento = DZ y Clave = 40 (lado débito)
+                    if c_val == 'DZ' and g_val == '40':
+                        return True
+
                     return False
 
                 def limpiar_numero(v):
@@ -304,7 +330,7 @@ if archivo_subido is not None:
                     h = solo_digitos(valor_h)
                     return bool(a and h and (a in h or h in a))
 
-                df['Es_Nequi'] = df.apply(es_nequi_v32, axis=1)
+                df['Es_Nequi'] = df.apply(es_nequi_v33, axis=1)
                 df['H_Limpia'] = df[col_H].apply(limpiar_numero)
                 df['A_Limpia'] = df[col_A].apply(limpiar_numero)
 
@@ -414,7 +440,7 @@ if archivo_subido is not None:
 
                     sector_a = str(ra.get('Sector', '')).strip()
                     sector_b = str(rb.get('Sector', '')).strip()
-                    
+
                     if not ignorar_sector:
                         if sector_a not in ('', 'Sin clasificar') and sector_b not in ('', 'Sin clasificar'):
                             if sector_a != sector_b:
@@ -774,8 +800,6 @@ if archivo_subido is not None:
 
                 # =====================================================
                 # EXCEPCIÓN NEQUI (solo líneas Es_Nequi=True)
-                # FIX BUG 4: Detección explícita de ambigüedad
-                # FIX BUG 6: Usa ignorar_sector=True
                 # =====================================================
                 df_40 = df_40[~df_40['ID_Linea'].isin(usados)]
                 df_50 = df_50[~df_50['ID_Linea'].isin(usados)]
@@ -819,7 +843,6 @@ if archivo_subido is not None:
                         return True
                     return False
 
-                # PASO 1: Priorizar estrictamente cruces exactos en fecha (0 días)
                 for _, r40 in df_nequi_40.iterrows():
                     id40 = r40['ID_Linea']
                     if id40 in usados: continue
@@ -835,7 +858,6 @@ if archivo_subido is not None:
 
                     procesar_candidato_nequi(id40, candidatos_50)
 
-                # PASO 2: Para los que quedaron, buscar candidatos con hasta TOPE_DIAS_ALERTA
                 for _, r40 in df_nequi_40.iterrows():
                     id40 = r40['ID_Linea']
                     if id40 in usados: continue
@@ -992,10 +1014,8 @@ if archivo_subido is not None:
 
                 # =====================================================
                 # MODO TARDE (SEGUNDA PASADA PROFUNDA T1 - T6)
-                # FIX BUG 3 aplicado en T4 (usa tol_valor_purpura)
                 # =====================================================
                 if modo_tarde:
-                    # T1: IP sin banco
                     if usar_ipcb:
                         p40_ip = df[(df[col_G] == '40') & (df[col_C].astype(str).str.upper() == 'IP') & (~df['ID_Linea'].isin(usados))]
                         p50 = df[(df[col_G] == '50') & (~df['ID_Linea'].isin(usados))]
@@ -1019,7 +1039,6 @@ if archivo_subido is not None:
                                 usados.update([id40, id50])
                                 parejas_registradas.append((id40, id50))
 
-                    # T2: Flex por referencia parcial
                     p40 = df[(df[col_G] == '40') & (~df['ID_Linea'].isin(usados))]
                     p50 = df[(df[col_G] == '50') & (~df['ID_Linea'].isin(usados))]
                     for id40, f40 in p40.iterrows():
@@ -1036,7 +1055,6 @@ if archivo_subido is not None:
                             usados.update([id40, id50])
                             parejas_registradas.append((id40, id50))
 
-                    # T3: Sectorización FIFO
                     p40 = df[(df[col_G] == '40') & (~df['ID_Linea'].isin(usados)) & (df['Sector'] != 'Sin clasificar')]
                     for (banco, sector, importe), g40 in p40.groupby([col_banco, 'Sector', 'Abs_I']):
                         g50 = df[(df[col_G] == '50') & (df[col_banco] == banco) & (df['Sector'] == sector) & (df['Abs_I'] == importe) & (~df['ID_Linea'].isin(usados))].copy()
@@ -1055,7 +1073,6 @@ if archivo_subido is not None:
                                 usados.update([id40, id50])
                                 parejas_registradas.append((id40, id50))
 
-                    # T4: Regla 7B (Diferencia > tol_valor_purpura) - FIX BUG 3
                     p40 = df[(df[col_G] == '40') & (~df['ID_Linea'].isin(usados)) & (df['Sector'] != 'Sin clasificar')]
                     p50 = df[(df[col_G] == '50') & (~df['ID_Linea'].isin(usados))]
                     for id40, f40 in p40.iterrows():
@@ -1077,7 +1094,6 @@ if archivo_subido is not None:
                                 df.loc[df['ID_Linea'] == idx, 'Comentario'] = f"Tarde T4: Regla 7B, diferencia valor ${dif_val:,.2f}, dif {dif_d} días."
                             usados.update([id40, id50])
 
-                    # T5: Rastreador Huérfano (Cruce por valor exacto ignorando fechas y banco)
                     p40_h = df[(df[col_G] == '40') & (~df['ID_Linea'].isin(usados))]
                     p50_h = df[(df[col_G] == '50') & (~df['ID_Linea'].isin(usados))]
                     for imp, g40 in p40_h.groupby('Abs_I'):
@@ -1092,7 +1108,6 @@ if archivo_subido is not None:
                                 df.loc[df['ID_Linea'] == idx, 'Comentario'] = f"Tarde T5: Importe exacto (${imp:,.0f}), separados por {dias_lejos} días. Ignora banco y fecha."
                             usados.update([id40, id50])
 
-                    # T6: Aislar Micro-saldos y Gastos Bancarios (< $10.000)
                     micro = df[(df[col_G] == '40') & (~df['ID_Linea'].isin(usados)) & (df['Abs_I'] <= 10000)]
                     palabras = ['GMF', 'COMISION', 'IVA', 'RETENCION', '4X1000', 'GRAVAMEN', 'INTERESES', 'RETEICA', 'RETEFUENTE']
                     for id_m, fila_m in micro.iterrows():
@@ -1117,7 +1132,7 @@ if archivo_subido is not None:
                 # EXPORTACIÓN: Separación Estado_Tecnico vs Estado_Conciliacion
                 # =====================================================
                 df_final = df.drop(columns=['ID_Linea', 'Abs_I', 'Fecha_F', 'Fecha_D'], errors='ignore')
-                
+
                 df_final['Estado_Tecnico'] = df_final['Estado_Conciliacion']
                 df_final['Comentario_Tecnico'] = df_final['Comentario']
 
@@ -1169,13 +1184,10 @@ if archivo_subido is not None:
                     return df_cualquiera[cols].copy()
 
                 cuadre_ok = filas_antes == (len(df) + len(filas_descartadas))
-                
+
                 for c in [c for c in df_final.columns if 'fe.' in c.lower() or 'fecha' in c.lower() or 'fe-' in c.lower()]:
                     df_final[c] = pd.to_datetime(df_final[c], errors='coerce').dt.strftime('%d/%m/%Y')
 
-                # =====================================================
-                # FUNCION DE COLOR BASADA EN ESTADO_TECNICO
-                # =====================================================
                 def color_fila(row):
                     idx = row.name
                     est = str(df_final.loc[idx, 'Estado_Tecnico']).strip().lower()
@@ -1190,7 +1202,6 @@ if archivo_subido is not None:
                     if 'conciliado' in est or 'grupo azul' in est or 'flex' in est: return [f'background-color: {COLOR_AZUL}; color: black'] * len(row)
                     if 'fecha fuera de rango' in est: return [f'background-color: {COLOR_BLANCO}; color: red'] * len(row)
 
-                    # Verde ESTRICTO solo para DZ multiposición
                     es_dz_multiposicion = (
                         'dz posiciones múltiples' in est or
                         'dz multiposición sin cruce' in est
@@ -1200,9 +1211,6 @@ if archivo_subido is not None:
 
                     return [f'background-color: {COLOR_BLANCO}; color: black'] * len(row)
 
-                # =====================================================
-                # ESCRITURA EXCEL
-                # =====================================================
                 output = io.BytesIO()
                 b_unicos = [b for b in df_final[col_banco].unique() if str(b).strip().lower() not in ('', 'nan')]
                 orden_cuentas = [
@@ -1332,7 +1340,7 @@ if archivo_subido is not None:
                 # =====================================================
                 # INTERFAZ FINAL
                 # =====================================================
-                st.success("¡Conciliación completada con el motor de reglas CLM v32 (Nequi Rangos)!")
+                st.success("¡Conciliación completada con el motor de reglas CLM v33 (Nequi Rangos + Estructura C/G)!")
                 if not cuadre_ok:
                     st.warning("⚠️ Revisa la pestaña DESCARTADAS, el total de filas no coincide.")
                 for adv in advertencias:
@@ -1349,15 +1357,19 @@ if archivo_subido is not None:
 - <span style="background-color:{COLOR_GRIS}; padding:2px 8px;">Gris: Cruces múltiples IP/CB (Regla 3)</span>
 - <span style="background-color:{COLOR_BLANCO}; padding:2px 8px; border:1px solid #ccc;">Blanco: Pendientes / Otras Sugerencias / Bloqueos por cruces fuera del límite de días</span>
 
-**Novedad v32 — Detección NEQUI por rangos en Referencia (H):**
-- Una línea se considera NEQUI **solo si** su Referencia (columna H) está en:
-  - **100.000 – 9.999.999** (6-7 dígitos)
-  - **1.000.000.000 – 1.399.999.999** (10 dígitos, empiezan por 10-13)
-- **O** si cumple heurística textual previa: texto "NEQUI" en K/A/H, o Asignación "T", "T-", "T/", "/".
-- Si no se cumple ninguna, la línea **no entra** en reglas NEQUI (Regla 8, Excepción Nequi, etc.) y sigue flujo normal DZ/CB.
+**Novedad v33 — Nequi por rango en H, condicionado a estructura C/G:**
+- El rango numérico en Referencia (H) — **100.000-9.999.999** o **1.000.000.000-1.399.999.999** —
+  solo activa Nequi si además:
+  - **Clave contabiliz. (G) = "50"** (documentos del lado banco/CB), **o**
+  - **Clase de documento (C) = "DZ" y Clave contabiliz. (G) = "40"** (legalizaciones, lado débito).
+- Cualquier otra combinación (por ejemplo IP, o DZ con G distinto de 40) **no activa** Nequi por rango,
+  aunque H esté dentro del rango numérico.
+- La heurística textual (texto "NEQUI", Asignación "T"/"T-"/"T/"/"/ ") sigue siendo condición
+  suficiente independiente, sin exigir la estructura C/G.
 
-**Fixes heredados v31:**
-- IP sin banco (nunca Reclasificación), Regla 3 sin fecha exacta, 7B/T4 paramétrica, Nequi anti-ambigüedad, Verde estricto, Separación Estado_Tecnico/Visible, Motor blindado.
+**Fixes heredados v31/v32:**
+- IP sin banco (nunca Reclasificación), Regla 3 sin fecha exacta, 7B/T4 paramétrica, Nequi anti-ambigüedad,
+  Verde estricto, Separación Estado_Tecnico/Visible, Motor blindado.
 ''', unsafe_allow_html=True)
 
                 c1, c2, c3, c4, c5, c6 = st.columns(6)
@@ -1374,7 +1386,7 @@ if archivo_subido is not None:
                 st.download_button(
                     label="📥 Descargar Excel con Resultados",
                     data=output.getvalue(),
-                    file_name="Conciliacion_CLM_v32_Nequi_Rangos.xlsx",
+                    file_name="Conciliacion_CLM_v33_Nequi_Rangos_Estructural.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
 
