@@ -882,7 +882,7 @@ if archivo_subido is not None:
 
                         candidatos['_dif_valor'] = (candidatos['Abs_I'] - linea['Abs_I']).abs()
                         candidatos['_mismo_sector'] = (candidatos['Sector'] == linea['Sector']) & (linea['Sector'] != 'Sin clasificar')
-                        candidatos['_mismo_A_H'] = candidatos[col_H].astype(str).strstrip() == str(linea[col_A]).strip()
+                        candidatos['_mismo_A_H'] = candidatos[col_H].astype(str).str.strip() == str(linea[col_A]).strip()
                         candidatos_ordenados = candidatos.sort_values(by=['_mismo_A_H', '_mismo_sector', '_dif_valor', '_dif_dias'], ascending=[False, False, True, True])
 
                         lineas_candidatos = [f"{rank}. Doc={int(c[col_B])}, H={c[col_H]}, I=${c['Abs_I']:,.0f}, F={c[col_F]}, Sector={c['Sector']}, dif_valor=${c['_dif_valor']:,.0f}, dif_dias={int(c['_dif_dias'])}" for rank, (_, c) in enumerate(candidatos_ordenados.head(5).iterrows(), start=1)]
