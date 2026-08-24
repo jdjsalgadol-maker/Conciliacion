@@ -1245,21 +1245,14 @@ if archivo_subido is not None:
                     # Prioridad 2: Multi-posiciones DZ sin cruce (Verde)
                     if 'dz posiciones múltiples' in est or 'dz multiposición sin cruce' in est:
                         return [f'background-color: {COLOR_VERDE}; color: black'] * len(row)
-
-                    # FIX: Cruce múltiple IP/CB (Gris) se evalúa ANTES que el
-                    # 'conciliado' genérico. Su propio Estado_Tecnico empieza con
-                    # "Conciliado - Cruce múltiple IP/CB (Regla 3)", así que si el
-                    # chequeo genérico de 'conciliado' fuera antes, esta regla
-                    # nunca llegaría a pintarse de gris -- quedaría mezclada con
-                    # el azul de conciliación normal, exactamente lo que no debe
-                    # pasar entre reglas distintas.
-                    # Prioridad 3: Cruce múltiple IP/CB (Gris)
-                    if 'cruce múltiple ip/cb' in est: 
-                        return [f'background-color: {COLOR_GRIS}; color: black'] * len(row)
-
-                    # Prioridad 4: Conciliado perfecto o parcial flex (Azul)
+                        
+                    # Prioridad 3: Conciliado perfecto o parcial flex (Azul)
                     if 'conciliado' in est or 'grupo azul' in est or 'flex' in est: 
                         return [f'background-color: {COLOR_AZUL}; color: black'] * len(row)
+                        
+                    # Prioridad 4: Cruce múltiple IP/CB (Gris)
+                    if 'cruce múltiple ip/cb' in est: 
+                        return [f'background-color: {COLOR_GRIS}; color: black'] * len(row)
                         
                     # Prioridad 5: Reclasificación (Durazno)
                     if 'reclasificación' in est: 
@@ -1328,10 +1321,7 @@ if archivo_subido is not None:
                 with pd.ExcelWriter(output, engine='openpyxl') as writer:
                     total_filas = len(df_final)
                     
-                    total_azul = int(
-                        (df_final['Estado_Tecnico'].str.contains('Conciliado|grupo azul|Flex', na=False, regex=True) &
-                         ~df_final['Estado_Tecnico'].str.contains('cruce múltiple ip/cb', case=False, na=False)).sum()
-                    )
+                    total_azul = int(df_final['Estado_Tecnico'].str.contains('Conciliado|grupo azul|Flex', na=False, regex=True).sum())
                     mask_gris = df_final['Estado_Tecnico'].str.contains('cruce múltiple ip/cb', case=False, na=False)
                     mask_durazno = df_final['Estado_Tecnico'].str.contains('reclasificación', case=False, na=False)
                     mask_salmon = df_final['Estado_Tecnico'].str.contains('grupo salmon|diferencia de fecha', case=False, na=False)
@@ -1345,7 +1335,6 @@ if archivo_subido is not None:
                     )
                     total_verde = int(mask_verde.sum())
 
-                    total_gris = int(mask_gris.sum())
                     total_salmon = int(mask_salmon.sum())
                     total_morado = int(mask_morado.sum())
                     total_durazno = int(mask_durazno.sum())
@@ -1356,7 +1345,6 @@ if archivo_subido is not None:
                         "Métrica": [
                             "Fecha de procesamiento", "Total filas procesadas",
                             "Azul - Conciliados Exactos y Flex",
-                            "Gris - Cruce múltiple IP/CB (Regla 3)",
                             "Verde - Documentos DZ multiposición sin conciliar",
                             "Salmón - Diferencia de fecha (Regla 7)",
                             "Morado - Diferencia de valor máx $500",
@@ -1373,7 +1361,7 @@ if archivo_subido is not None:
                         ],
                         "Valor": [
                             datetime.now().strftime('%d/%m/%Y %H:%M'), total_filas,
-                            total_azul, total_gris, total_verde, total_salmon, total_morado, total_durazno,
+                            total_azul, total_verde, total_salmon, total_morado, total_durazno,
                             int(mask_amarillo.sum()), total_pendiente,
                             len(ind_ip_exacto), len(ind_ip_tolerancia),
                             len(ind_nequi8_azul), len(ind_nequi8_sugerencia),
