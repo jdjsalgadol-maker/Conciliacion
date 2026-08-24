@@ -335,6 +335,13 @@ if archivo_subido is not None:
                 df['H_Limpia'] = df[col_H].apply(limpiar_numero)
                 df['A_Limpia'] = df[col_A].apply(limpiar_numero)
 
+                if usar_ipcb:
+                    df['Es_IP_G40'] = (df[col_C].astype(str).str.upper() == 'IP') & (df[col_G] == '40')
+                    df['Es_CB_G50'] = (df[col_C].astype(str).str.upper() == 'CB') & (df[col_G] == '50')
+                else:
+                    df['Es_IP_G40'] = False
+                    df['Es_CB_G50'] = False
+
                 # =====================================================
                 # FUNCIONES AUXILIARES
                 # =====================================================
@@ -624,13 +631,10 @@ if archivo_subido is not None:
 
                 # =====================================================
                 # Regla 1 — A debe coincidir con H (exacto)
-                # AISLAMIENTO ESTRICTO DE IP: Los docs IP (40) ya NO participarán en las reglas genéricas
+                # AISLAMIENTO ESTRICTO DE IP/CB: Ya no participan en las reglas genéricas
                 # =====================================================
-                if usar_ipcb:
-                    df_40 = df[(df[col_G] == '40') & (df[col_C].astype(str).str.upper() != 'IP')].copy()
-                else:
-                    df_40 = df[(df[col_G] == '40')].copy()
-                df_50 = df[(df[col_G] == '50')].copy()
+                df_40 = df[(df[col_G] == '40') & (~df['Es_IP_G40'])].copy()
+                df_50 = df[(df[col_G] == '50') & (~df['Es_CB_G50'])].copy()
 
                 def emparejar_1a1_por_llave(sub40, sub50, llave40, llave50, base_txt):
                     s40 = sub40[~sub40['ID_Linea'].isin(usados)].copy()
@@ -654,8 +658,8 @@ if archivo_subido is not None:
                 # ================================================================
                 # PARCHE v33: FLEX POR REFERENCIA PARCIAL (Unica excepcion a 4 dias)
                 # ================================================================
-                pend40_flex = df[(df[col_G] == '40') & (~df['ID_Linea'].isin(usados))]
-                pend50_flex = df[(df[col_G] == '50') & (~df['ID_Linea'].isin(usados))]
+                pend40_flex = df[(df[col_G] == '40') & (~df['Es_IP_G40']) & (~df['ID_Linea'].isin(usados))]
+                pend50_flex = df[(df[col_G] == '50') & (~df['Es_CB_G50']) & (~df['ID_Linea'].isin(usados))]
 
                 for id40, fila40 in pend40_flex.iterrows():
                     candidatos = pend50_flex[
@@ -710,10 +714,10 @@ if archivo_subido is not None:
                 # PARCHE v33: SECTORIZACION MULTIPLE FIFO
                 # ================================================================
                 for (banco_g, sector_g, importe_g), lado40 in df[
-                    (df[col_G] == '40') & (~df['ID_Linea'].isin(usados)) & (df['Sector'] != 'Sin clasificar')
+                    (df[col_G] == '40') & (~df['Es_IP_G40']) & (~df['ID_Linea'].isin(usados)) & (df['Sector'] != 'Sin clasificar')
                 ].groupby([col_banco, 'Sector', 'Abs_I']):
                     lado50 = df[
-                        (df[col_G] == '50') & (df[col_banco] == banco_g) & (df['Sector'] == sector_g) & (df['Abs_I'] == importe_g) & (~df['ID_Linea'].isin(usados))
+                        (df[col_G] == '50') & (~df['Es_CB_G50']) & (df[col_banco] == banco_g) & (df['Sector'] == sector_g) & (df['Abs_I'] == importe_g) & (~df['ID_Linea'].isin(usados))
                     ].copy()
                     lado40 = lado40.sort_values(col_B)
                     lado50 = lado50.sort_values(col_B)
@@ -724,8 +728,8 @@ if archivo_subido is not None:
                         registrar_pareja_por_fecha(id40, id50, f'Sectorizacion FIFO en {sector_g}; importe exacto.')
 
                 # Sobrantes de sectorización desbalanceada
-                df_40 = df[(df[col_G] == '40') & (~df['ID_Linea'].isin(usados))]
-                df_50 = df[(df[col_G] == '50') & (~df['ID_Linea'].isin(usados))]
+                df_40 = df[(df[col_G] == '40') & (~df['Es_IP_G40']) & (~df['ID_Linea'].isin(usados))]
+                df_50 = df[(df[col_G] == '50') & (~df['Es_CB_G50']) & (~df['ID_Linea'].isin(usados))]
                 d40_sect = df_40[df_40['Sector'] != 'Sin clasificar']
                 d50_sect = df_50[df_50['Sector'] != 'Sin clasificar']
                 if not d40_sect.empty and not d50_sect.empty:
@@ -747,8 +751,8 @@ if archivo_subido is not None:
                 # ================================================================
                 # PARCHE v33: REGLA 7B - DIFERENCIA DE VALOR (Alertas Sugeridas)
                 # ================================================================
-                pend40_7b = df[(df[col_G] == '40') & (~df['ID_Linea'].isin(usados)) & (df['Estado_Conciliacion'] == 'Pendiente')].copy()
-                pend50_7b = df[(df[col_G] == '50') & (~df['ID_Linea'].isin(usados)) & (df['Estado_Conciliacion'] == 'Pendiente')].copy()
+                pend40_7b = df[(df[col_G] == '40') & (~df['Es_IP_G40']) & (~df['ID_Linea'].isin(usados)) & (df['Estado_Conciliacion'] == 'Pendiente')].copy()
+                pend50_7b = df[(df[col_G] == '50') & (~df['Es_CB_G50']) & (~df['ID_Linea'].isin(usados)) & (df['Estado_Conciliacion'] == 'Pendiente')].copy()
 
                 for id40, fila40 in pend40_7b.iterrows():
                     if fila40['Sector'] == 'Sin clasificar': continue
@@ -1057,8 +1061,8 @@ if archivo_subido is not None:
                 if modo_tarde:
 
 
-                    p40 = df[(df[col_G] == '40') & (~df['ID_Linea'].isin(usados))]
-                    p50 = df[(df[col_G] == '50') & (~df['ID_Linea'].isin(usados))]
+                    p40 = df[(df[col_G] == '40') & (~df['Es_IP_G40']) & (~df['ID_Linea'].isin(usados))]
+                    p50 = df[(df[col_G] == '50') & (~df['Es_CB_G50']) & (~df['ID_Linea'].isin(usados))]
                     for id40, f40 in p40.iterrows():
                         if id40 in usados: continue
                         cand = p50[(p50[col_banco] == f40[col_banco]) & (p50['Abs_I'] == f40['Abs_I']) & (~p50['ID_Linea'].isin(usados))].copy()
@@ -1073,7 +1077,7 @@ if archivo_subido is not None:
                             usados.update([id40, id50])
                             parejas_registradas.append((id40, id50))
 
-                    p40 = df[(df[col_G] == '40') & (~df['ID_Linea'].isin(usados)) & (df['Sector'] != 'Sin clasificar')]
+                    p40 = df[(df[col_G] == '40') & (~df['Es_IP_G40']) & (~df['ID_Linea'].isin(usados)) & (df['Sector'] != 'Sin clasificar')]
                     for (banco, sector, importe), g40 in p40.groupby([col_banco, 'Sector', 'Abs_I']):
                         g50 = df[(df[col_G] == '50') & (df[col_banco] == banco) & (df['Sector'] == sector) & (df['Abs_I'] == importe) & (~df['ID_Linea'].isin(usados))].copy()
                         if g50.empty: continue
@@ -1091,8 +1095,8 @@ if archivo_subido is not None:
                                 usados.update([id40, id50])
                                 parejas_registradas.append((id40, id50))
 
-                    p40 = df[(df[col_G] == '40') & (~df['ID_Linea'].isin(usados)) & (df['Sector'] != 'Sin clasificar')]
-                    p50 = df[(df[col_G] == '50') & (~df['ID_Linea'].isin(usados))]
+                    p40 = df[(df[col_G] == '40') & (~df['Es_IP_G40']) & (~df['ID_Linea'].isin(usados)) & (df['Sector'] != 'Sin clasificar')]
+                    p50 = df[(df[col_G] == '50') & (~df['Es_CB_G50']) & (~df['ID_Linea'].isin(usados))]
                     for id40, f40 in p40.iterrows():
                         cand = p50[(p50[col_banco] == f40[col_banco]) & (p50['Sector'] == f40['Sector']) & (~p50['ID_Linea'].isin(usados))].copy()
                         if cand.empty: continue
@@ -1112,8 +1116,8 @@ if archivo_subido is not None:
                                 df.loc[df['ID_Linea'] == idx, 'Comentario'] = f"Tarde T4: Regla 7B, diferencia valor ${dif_val:,.2f}, dif {dif_d} días."
                             usados.update([id40, id50])
 
-                    p40_h = df[(df[col_G] == '40') & (~df['ID_Linea'].isin(usados))]
-                    p50_h = df[(df[col_G] == '50') & (~df['ID_Linea'].isin(usados))]
+                    p40_h = df[(df[col_G] == '40') & (~df['Es_IP_G40']) & (~df['ID_Linea'].isin(usados))]
+                    p50_h = df[(df[col_G] == '50') & (~df['Es_CB_G50']) & (~df['ID_Linea'].isin(usados))]
                     for imp, g40 in p40_h.groupby('Abs_I'):
                         if imp > 0 and imp % multiplo_redondo == 0: continue
                         g50 = p50_h[p50_h['Abs_I'] == imp]
@@ -1126,7 +1130,7 @@ if archivo_subido is not None:
                                 df.loc[df['ID_Linea'] == idx, 'Comentario'] = f"Tarde T5: Importe exacto (${imp:,.0f}), separados por {dias_lejos} días. Ignora banco y fecha."
                             usados.update([id40, id50])
 
-                    micro = df[(df[col_G] == '40') & (~df['ID_Linea'].isin(usados)) & (df['Abs_I'] <= 10000)]
+                    micro = df[(df[col_G] == '40') & (~df['Es_IP_G40']) & (~df['ID_Linea'].isin(usados)) & (df['Abs_I'] <= 10000)]
                     palabras = ['GMF', 'COMISION', 'IVA', 'RETENCION', '4X1000', 'GRAVAMEN', 'INTERESES', 'RETEICA', 'RETEFUENTE']
                     for id_m, fila_m in micro.iterrows():
                         txt = f"{fila_m.get(col_K, '')} {fila_m.get(col_novedad, '')}".upper()
@@ -1400,7 +1404,7 @@ if archivo_subido is not None:
                 # =====================================================
                 # INTERFAZ
                 # =====================================================
-                st.success("¡Conciliación completada con el motor de reglas CLM v38 (Integral + Nequi FIFO + IP Estricto)!")
+                st.success("¡Conciliación completada con el motor de reglas CLM v39 (Integral + IP/CB Estricto)!")
                 if not cuadre_ok:
                     st.warning("⚠️ Revisa la pestaña DESCARTADAS, el total de filas no coincide.")
                 for adv in advertencias:
@@ -1417,7 +1421,7 @@ if archivo_subido is not None:
 - <span style="background-color:{COLOR_GRIS}; padding:2px 8px;">Gris: Cruces múltiples IP/CB (Regla 3)</span>
 - <span style="background-color:{COLOR_BLANCO}; padding:2px 8px; border:1px solid #ccc;">Blanco: Pendientes / Otras Sugerencias / Bloqueos por cruces fuera del límite de días</span>
 
-**Novedades v38 (Integral + Nequi FIFO + IP Estricto):**
+**Novedades v39 (Integral + IP/CB Estricto):**
 - **Nequi Dinámico:** Reconoce Nequi por rango numérico (Créditos) o por palabras clave / códigos "T", "/", "T-" (Legalizaciones), tolerando errores de escritura.
 - **Desambiguación FIFO en Nequi:** Resuelve automáticamente cruces cuando hay múltiples documentos Nequi del mismo importe y fecha.
 - **Estados y Comentarios simplificados:** La exportación usa frases cortas ("Registrado en otro banco", "Diferencia de fecha") para revisión rápida.
@@ -1438,7 +1442,7 @@ if archivo_subido is not None:
                 st.download_button(
                     label="📥 Descargar Excel con Resultados",
                     data=output.getvalue(),
-                    file_name="Conciliacion_CLM_v38_Integral_IP_Estricto.xlsx",
+                    file_name="Conciliacion_CLM_v39_Integral_IP_CB_Estricto.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
 
