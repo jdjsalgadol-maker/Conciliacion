@@ -1,23 +1,5 @@
-# app_conciliacion_v33_nequi_rangos_estructural.py
+# app_conciliacion_v30_comentarios_cortos.py
 #
-# VERSION v33: Refinamiento estructural de la regla NEQUI (sobre v32).
-#
-# El rango numérico en H (100.000-9.999.999 o 1.000.000.000-1.399.999.999)
-# ya NO se aplica de forma global a cualquier fila. Ahora se exige que la
-# fila cumpla también con la posición estructural correcta:
-#
-#   - Si Clave contabiliz. (G) = "50"  -> se evalúa el rango en H
-#     (documentos del lado banco/CB, cualquier Clase de documento).
-#   - Si Clase de documento (C) = "DZ" y Clave contabiliz. (G) = "40" ->
-#     se evalúa el rango en H (legalizaciones, lado débito).
-#   - Cualquier otra combinación de C/G (por ejemplo IP, o DZ con G distinto
-#     de 40) NO activa Nequi por rango numérico, así el valor de H esté
-#     dentro del rango. Evita falsos positivos en líneas que no son
-#     estructuralmente Nequi.
-#
-# La heurística textual previa (texto "NEQUI" en K/A/H, o Asignación
-# "T","T-","T/","/") se mantiene como condición suficiente alternativa,
-# independiente de la clase/clave, porque es una marca explícita del dato.
 
 import streamlit as st
 import pandas as pd
@@ -26,21 +8,19 @@ import io
 import re
 from datetime import datetime
 
-st.set_page_config(page_title="Conciliación Integral CLM v33", layout="wide")
+st.set_page_config(page_title="Conciliación Integral CLM", layout="wide")
 st.markdown('''
     <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
-    .stApp {max-width: 100%;}
     </style>
 ''', unsafe_allow_html=True)
 
-st.title("🏦 Conciliación Automatizada — Motor CLM v33 (Nequi Rangos + Estructura C/G) 🤖")
-st.write("Sube tu archivo consolidado. Selecciona 'Tarde' solo en la segunda pasada sobre el archivo depurado.")
+st.title("🏦 Conciliación Automatizada  🤖")
+st.write("Sube tu archivo consolidado.")
 st.caption(
-    "v33: Nequi por rango en H solo si (G='50') o (C='DZ' y G='40'); o heurística textual. "
-    "A=Asignación, B=Nº doc, C=Clase doc, D=Fecha periodo, F=Fecha valor (PRINCIPAL), G=Clave, H=Referencia, I=Importe, K=Texto."
+    "Selecciona opcion tarde despues de depurar."
 )
 
 with st.expander("⚙️ Parámetros de tolerancia"):
@@ -66,10 +46,9 @@ with st.expander("⚙️ Parámetros de tolerancia"):
     modo_tarde = st.checkbox(
         "🌅 Activar Casilla 'Tarde' (Segunda pasada en Pendientes)",
         value=False,
-        help="Ejecuta una segunda pasada profunda (T1 a T6) sobre lo que quedó pendiente. Genera pestaña REVISION_TARDE_MENOR_A_MAYOR."
+        help="Ejecuta una segunda pasada profunda (T1 a T6) y genera una pestaña ordenada de menor a mayor."
     )
 
-# --- CONSTANTES DE COLOR ---
 COLOR_AZUL = "#C5D9F1"      # Conciliado (todas las reglas cumplen)
 COLOR_VERDE = "#A9D18E"     # EXCLUSIVO: DZ multiposición sin conciliar
 COLOR_SALMON = "#F5B7A1"    # Diferencia de fecha (hasta 4 días) - Regla 7
@@ -84,7 +63,7 @@ archivo_subido = st.file_uploader("Selecciona el archivo de Excel o CSV", type=[
 if archivo_subido is not None:
     if st.button("🚀 Ejecutar Conciliación", use_container_width=True):
         try:
-            with st.spinner("Ejecutando motor de reglas CLM v33... Esto puede tomar unos segundos."):
+            with st.spinner("Ejecutando motor de reglas CLM... Esto puede tomar unos segundos."):
 
                 # =====================================================
                 # 1. LECTURA
@@ -247,7 +226,7 @@ if archivo_subido is not None:
                     if h_val in mapeo_referencias_dist: return mapeo_referencias_dist[h_val]
 
                     t_full = f"{texto_k} {texto_nov} {texto_a} {h_val}".upper()
-                    nums = re.findall(r'\b\d{4}\b', t_full)
+                    nums = re.findall(r'\d{4}', t_full)
                     for n in nums:
                         num = int(n)
                         if 2000 <= num <= 2999: return 'Dist Buga'
@@ -261,59 +240,57 @@ if archivo_subido is not None:
 
                 def obtener_ref_homologada(row):
                     texto = f"{row.get(col_H,'')} {row.get(col_A,'')} {row.get(col_K,'') if col_K else ''} {row.get(col_novedad,'') if col_novedad else ''}".upper()
-                    n8 = re.findall(r'\b\d{8}\b', texto)
+                    n8 = re.findall(r'\d{8}', texto)
                     for n in n8:
                         if n in mapeo_datafono_ref: return mapeo_datafono_ref[n]
-                    n4 = re.findall(r'\b\d{4}\b', texto)
+                    n4 = re.findall(r'\d{4}', texto)
                     for n in n4:
                         if n in mapeo_datafono_ref.values(): return n
                     return None
 
-                # =====================================================
-                # DETECCIÓN NEQUI v33: Rango numérico en H + posición estructural C/G
-                #
-                # El rango numérico en H (100.000-9.999.999 o
-                # 1.000.000.000-1.399.999.999) SOLO activa Nequi si la fila
-                # cumple con la posición estructural correcta:
-                #   - G == '50'                      -> aplica (lado banco/CB)
-                #   - C == 'DZ' y G == '40'           -> aplica (legalización, lado débito)
-                #   - cualquier otra combinación (IP, DZ con G != 40, etc.)
-                #     NO activa Nequi por rango, aunque H esté en rango.
-                #
-                # La heurística textual (texto "NEQUI", Asignación T/T-/T//)
-                # sigue siendo condición suficiente independiente de C/G.
-                # =====================================================
-                def es_nequi_v33(row):
-                    # 1) Heurística textual (condición suficiente, independiente de C/G)
-                    texto = f"{row.get(col_K,'') if col_K else ''} {row.get(col_A,'')} {row.get(col_H,'')}".upper()
-                    if 'NEQUI' in texto:
-                        return True
+                def es_nequi(row):
+                    val_g = str(row.get(col_G, '')).strip()
+                    val_c = str(row.get(col_C, '')).strip().upper() if col_C is not None else ''
+                    val_h = str(row.get(col_H, '')).strip()
+                    val_h_num_str = re.sub(r'\D', '', val_h)
+                    
+                    is_h_nequi_range = False
+                    if val_h_num_str.isdigit():
+                        val_h_num = int(val_h_num_str)
+                        if (100000 <= val_h_num <= 9999999) or (1000000000 <= val_h_num <= 1399999999):
+                            is_h_nequi_range = True
+
+                    # Recolectamos texto de posibles columnas donde se escriba Nequi
+                    texto = f"{row.get(col_K,'') if col_K else ''} {row.get(col_A,'')} {val_h}".upper()
+                    if col_novedad:
+                        texto += f" {str(row.get(col_novedad, '')).upper()}"
+
+                    # Regex con variaciones ortográficas comunes de Nequi
+                    tiene_palabra_nequi = bool(re.search(r'NEQUI|NEQI|NQUI|NEQUY|MEQUI|NEKUI|NEQ', texto))
+                    
+                    # Verificamos si la Asignación (A) tiene los prefijos/códigos exactos de Nequi
                     val_a = str(row.get(col_A, '')).strip().upper()
-                    if val_a == 'T' or val_a.startswith('T-') or val_a.startswith('T/') or val_a == '/':
-                        return True
+                    tiene_prefijo_a = val_a == 'T' or val_a.startswith('T-') or val_a.startswith('T/') or val_a == '/'
+                    
+                    # Cualquiera de los dos (palabra o prefijo) cuenta como un indicador válido de Nequi
+                    es_indicador_texto = tiene_palabra_nequi or tiene_prefijo_a
 
-                    # 2) Rango numérico en H, condicionado a posición estructural C/G
-                    h_raw = str(row.get(col_H, '')).strip()
-                    h_clean = re.sub(r'\.0$', '', h_raw)
-                    if not h_clean.isdigit():
+                    # 1. Validación para Créditos (G = 50)
+                    if val_g == '50':
+                        if is_h_nequi_range:
+                            return True
+
+                    # 2. Validación para Legalizaciones (C = DZ y G = 40)
+                    if val_g == '40' and val_c == 'DZ':
+                        # Exige que el rango se cumpla Y que exista el indicador (palabra o código en A)
+                        if is_h_nequi_range and es_indicador_texto:
+                            return True
                         return False
 
-                    h_num = int(h_clean)
-                    en_rango = (100_000 <= h_num <= 9_999_999) or (1_000_000_000 <= h_num <= 1_399_999_999)
-                    if not en_rango:
-                        return False
-
-                    g_val = str(row.get(col_G, '')).strip()
-                    c_val = str(row.get(col_C, '')).strip().upper() if usar_ipcb else ''
-
-                    # Documentos con Clave contabiliz. = 50 (lado banco/CB)
-                    if g_val == '50':
+                    # 3. Validaciones heredadas para otros documentos (No DZ)
+                    if es_indicador_texto: 
                         return True
-
-                    # Legalizaciones: Clase de documento = DZ y Clave = 40 (lado débito)
-                    if c_val == 'DZ' and g_val == '40':
-                        return True
-
+                        
                     return False
 
                 def limpiar_numero(v):
@@ -330,7 +307,7 @@ if archivo_subido is not None:
                     h = solo_digitos(valor_h)
                     return bool(a and h and (a in h or h in a))
 
-                df['Es_Nequi'] = df.apply(es_nequi_v33, axis=1)
+                df['Es_Nequi'] = df.apply(es_nequi, axis=1)
                 df['H_Limpia'] = df[col_H].apply(limpiar_numero)
                 df['A_Limpia'] = df[col_A].apply(limpiar_numero)
 
@@ -378,6 +355,10 @@ if archivo_subido is not None:
                     if pd.isna(f40) or pd.isna(f50): return None
                     return abs((f40 - f50).days)
 
+                def fecha_dentro_de_4_dias(id40, id50):
+                    dias = diferencia_dias_fila(id40, id50)
+                    return dias is not None and dias <= TOPE_DIAS_ALERTA
+
                 def registrar_pareja_por_fecha(id40, id50, comentario_base):
                     dias = diferencia_dias_fila(id40, id50)
                     if dias is None or dias > TOPE_DIAS_ALERTA:
@@ -399,6 +380,7 @@ if archivo_subido is not None:
                     parejas_registradas.append((id40, id50))
                     return True
 
+                # SE AÑADE EL PARÁMETRO ignorar_sector=False
                 def gate_seguridad(id40, id50, exigir_importe_exacto=True, tolerancia_valor=None, ignorar_sector=False):
                     res = df.loc[df['ID_Linea'].isin([id40, id50])]
                     ra = res[res['ID_Linea'] == id40].iloc[0]
@@ -440,7 +422,8 @@ if archivo_subido is not None:
 
                     sector_a = str(ra.get('Sector', '')).strip()
                     sector_b = str(rb.get('Sector', '')).strip()
-
+                    
+                    # SE EVALÚA EL SALVOCONDUCTO AQUÍ
                     if not ignorar_sector:
                         if sector_a not in ('', 'Sin clasificar') and sector_b not in ('', 'Sin clasificar'):
                             if sector_a != sector_b:
@@ -467,6 +450,7 @@ if archivo_subido is not None:
                     resultado['motivo'] = "Cumple reglas transversales"
                     return resultado
 
+                # SE AÑADE EL PARÁMETRO ignorar_sector=False
                 def clasificar_y_registrar(id40, id50, base_txt, ignorar_sector=False):
                     res = gate_seguridad(id40, id50, exigir_importe_exacto=True, tolerancia_valor=tol_valor_purpura, ignorar_sector=ignorar_sector)
                     if not res['ok']:
@@ -511,7 +495,7 @@ if archivo_subido is not None:
                     return True, estado_final
 
                 # =====================================================
-                # Regla 3: IP Homologados Agrupado (sin fecha en groupby)
+                # Regla 3: IP Homologados Agrupado
                 # =====================================================
                 ind_ip_exacto = set()
                 ind_ip_tolerancia = set()
@@ -588,12 +572,8 @@ if archivo_subido is not None:
                     for idl in ip_sin_resolver['ID_Linea']:
                         escribir_comentario(idl, "PDV (IP): requiere referencia homologada de base de datos o coincidencia por Zona.", append=False)
 
-                # ================================================================
-                # FIX BUG 1: BLOQUE "ALERTA RECLASIFICACIÓN EXCLUSIVA IP" ELIMINADO
-                # ================================================================
-
                 # =====================================================
-                # Regla 8: NEQUI POR TOTALES Y FIFO (solo líneas Es_Nequi=True)
+                # Regla 8: NEQUI POR TOTALES Y FIFO
                 # =====================================================
                 ind_nequi8_azul = set()
                 ind_nequi8_sugerencia = set()
@@ -699,7 +679,7 @@ if archivo_subido is not None:
                     parejas_registradas.append((id40, id50))
 
                 # =====================================================
-                # Regla 6 EXPLÍCITA — RECLASIFICACIÓN DE BANCO (Solo DZ/CB)
+                # Regla 6 EXPLÍCITA — RECLASIFICACIÓN DE BANCO
                 # =====================================================
                 df_40 = df_40[~df_40['ID_Linea'].isin(usados)]
                 df_50 = df_50[~df_50['ID_Linea'].isin(usados)]
@@ -762,7 +742,7 @@ if archivo_subido is not None:
                             df.loc[df['ID_Linea'] == r['ID_Linea'], 'Comentario'] = f"Sector '{sector}' desbalanceado. Débitos candidatos: {docs40_txt}"
 
                 # ================================================================
-                # PARCHE v33: REGLA 7B - DIFERENCIA DE VALOR (usa tol_valor_purpura)
+                # PARCHE v33: REGLA 7B - DIFERENCIA DE VALOR (Alertas Sugeridas)
                 # ================================================================
                 pend40_7b = df[(df[col_G] == '40') & (~df['ID_Linea'].isin(usados)) & (df['Estado_Conciliacion'] == 'Pendiente')].copy()
                 pend50_7b = df[(df[col_G] == '50') & (~df['ID_Linea'].isin(usados)) & (df['Estado_Conciliacion'] == 'Pendiente')].copy()
@@ -799,7 +779,7 @@ if archivo_subido is not None:
                     usados.update([id40, id50])
 
                 # =====================================================
-                # EXCEPCIÓN NEQUI (solo líneas Es_Nequi=True)
+                # EXCEPCIÓN NEQUI (A = "Nequi", C = DZ) - DOBLE PASADA
                 # =====================================================
                 df_40 = df_40[~df_40['ID_Linea'].isin(usados)]
                 df_50 = df_50[~df_50['ID_Linea'].isin(usados)]
@@ -810,8 +790,10 @@ if archivo_subido is not None:
                     exactos = candidatos_50[candidatos_50['Abs_I'] == df.loc[df['ID_Linea'] == id40, 'Abs_I'].iloc[0]]
                     if len(exactos) == 1:
                         id50 = exactos.iloc[0]['ID_Linea']
+                        # SE AÑADE ignorar_sector=True AL SALVOCONDUCTO
                         ok, _ = clasificar_y_registrar(id40, id50, "Excepción Nequi (cruce importe exacto)", ignorar_sector=True)
-                        if ok: usados.update([id40, id50])
+                        if ok:
+                            usados.update([id40, id50])
                         return True
                     if len(exactos) > 1:
                         docs_txt = resumen_docs(exactos)
@@ -829,8 +811,10 @@ if archivo_subido is not None:
                     con_tol = candidatos_50[candidatos_50['_dif_val'] <= tol_valor_purpura].sort_values('_dif_val')
                     if len(con_tol) == 1:
                         id50 = con_tol.iloc[0]['ID_Linea']
+                        # SE AÑADE ignorar_sector=True AL SALVOCONDUCTO
                         ok, _ = clasificar_y_registrar(id40, id50, "Excepción Nequi (con diferencia de valor)", ignorar_sector=True)
-                        if ok: usados.update([id40, id50])
+                        if ok:
+                            usados.update([id40, id50])
                         return True
                     if len(con_tol) > 1:
                         docs_txt = resumen_docs(con_tol)
@@ -843,6 +827,7 @@ if archivo_subido is not None:
                         return True
                     return False
 
+                # PRIMERA PASADA: BÚSQUEDA MISMO DÍA
                 for _, r40 in df_nequi_40.iterrows():
                     id40 = r40['ID_Linea']
                     if id40 in usados: continue
@@ -852,12 +837,14 @@ if archivo_subido is not None:
                     ].copy()
                     if candidatos_50.empty: continue
 
+                    # Filtro de sector eliminado para Nequi
                     candidatos_50['_dif_dias'] = (candidatos_50['Fecha_F'] - r40['Fecha_F']).dt.days.abs().fillna(999)
                     candidatos_50 = candidatos_50[candidatos_50['_dif_dias'] == 0]
                     if candidatos_50.empty: continue
 
                     procesar_candidato_nequi(id40, candidatos_50)
 
+                # SEGUNDA PASADA: BÚSQUEDA CON TOLERANCIA DE DÍAS
                 for _, r40 in df_nequi_40.iterrows():
                     id40 = r40['ID_Linea']
                     if id40 in usados: continue
@@ -867,6 +854,7 @@ if archivo_subido is not None:
                     ].copy()
                     if candidatos_50.empty: continue
 
+                    # Filtro de sector eliminado para Nequi
                     candidatos_50['_dif_dias'] = (candidatos_50['Fecha_F'] - r40['Fecha_F']).dt.days.abs().fillna(999)
                     candidatos_50 = candidatos_50[candidatos_50['_dif_dias'] <= TOPE_DIAS_ALERTA]
                     candidatos_50 = candidatos_50.sort_values('_dif_dias')
@@ -894,7 +882,7 @@ if archivo_subido is not None:
 
                         candidatos['_dif_valor'] = (candidatos['Abs_I'] - linea['Abs_I']).abs()
                         candidatos['_mismo_sector'] = (candidatos['Sector'] == linea['Sector']) & (linea['Sector'] != 'Sin clasificar')
-                        candidatos['_mismo_A_H'] = candidatos[col_H].astype(str).str.strip() == str(linea[col_A]).strip()
+                        candidatos['_mismo_A_H'] = candidatos[col_H].astype(str).strstrip() == str(linea[col_A]).strip()
                         candidatos_ordenados = candidatos.sort_values(by=['_mismo_A_H', '_mismo_sector', '_dif_valor', '_dif_dias'], ascending=[False, False, True, True])
 
                         lineas_candidatos = [f"{rank}. Doc={int(c[col_B])}, H={c[col_H]}, I=${c['Abs_I']:,.0f}, F={c[col_F]}, Sector={c['Sector']}, dif_valor=${c['_dif_valor']:,.0f}, dif_dias={int(c['_dif_dias'])}" for rank, (_, c) in enumerate(candidatos_ordenados.head(5).iterrows(), start=1)]
@@ -1118,7 +1106,7 @@ if archivo_subido is not None:
                             usados.add(id_m)
 
                 # =====================================================
-                # CIERRE: Comentarios por defecto para pendientes
+                # CIERRE
                 # =====================================================
                 sin_p = df['Estado_Conciliacion'] == 'Pendiente'
                 if usar_ipcb:
@@ -1129,10 +1117,11 @@ if archivo_subido is not None:
                     df.loc[sin_p & (df['Comentario'] == ''), 'Comentario'] = 'Sin coincidencia ni sugerencia que cumpla reglas de seguridad.'
 
                 # =====================================================
-                # EXPORTACIÓN: Separación Estado_Tecnico vs Estado_Conciliacion
+                # SIMPLIFICACIÓN DE ESTADOS, COMENTARIOS Y EXPORTACIÓN
                 # =====================================================
                 df_final = df.drop(columns=['ID_Linea', 'Abs_I', 'Fecha_F', 'Fecha_D'], errors='ignore')
 
+                # Preservamos los valores enriquecidos/técnicos en columnas ocultas
                 df_final['Estado_Tecnico'] = df_final['Estado_Conciliacion']
                 df_final['Comentario_Tecnico'] = df_final['Comentario']
 
@@ -1152,26 +1141,43 @@ if archivo_subido is not None:
                 def simplificar_comentario(txt):
                     txt_lower = str(txt).lower()
                     if not txt_lower or txt_lower == 'nan': return ""
+                    
                     if 'sin coincidencia' in txt_lower:
-                        if 'pdv' in txt_lower or 'ip' in txt_lower: return "Sin coincidencia (Falta Referencia POS)"
+                        if 'pdv' in txt_lower or 'ip' in txt_lower:
+                            return "Sin coincidencia (Falta Referencia POS)"
                         return "Sin coincidencia"
-                    if 'bloquead' in txt_lower or 'fuera de rango' in txt_lower: return "Excede límite de días permitidos"
+                    if 'bloquead' in txt_lower or 'fuera de rango' in txt_lower:
+                        return "Excede límite de días permitidos"
                     if 'nequi' in txt_lower:
-                        if 'no cuadra' in txt_lower or 'ambigua' in txt_lower or 'múltiples' in txt_lower or 'varios' in txt_lower or 'candidatos' in txt_lower: return "Revisar Nequi (Ambigüedad o Totales)"
+                        if 'no cuadra' in txt_lower or 'ambigua' in txt_lower or 'múltiples' in txt_lower or 'varios' in txt_lower or 'candidatos' in txt_lower:
+                            return "Revisar Nequi (Ambigüedad o Totales)"
                         return "Cruce Nequi válido"
-                    if 'reclasificación' in txt_lower or 'regla 6' in txt_lower: return "Registrado en otro banco"
-                    if 'diferencia de fecha' in txt_lower or 'diferencia f=' in txt_lower or 't3' in txt_lower: return "Diferencia de fecha"
-                    if 'diferencia de valor' in txt_lower or 'regla 7b' in txt_lower or 'dif=$' in txt_lower or 't4' in txt_lower: return "Diferencia de valor"
-                    if 'gasto' in txt_lower or 'comisión' in txt_lower or 't6' in txt_lower: return "Posible gasto bancario"
-                    if 'desbalanceado' in txt_lower: return "Descuadre por sector"
-                    if 'múltiples posiciones' in txt_lower or 'varias posiciones' in txt_lower: return "Varias posiciones sin cruzar"
-                    if 'ip/cb' in txt_lower or 'homologad' in txt_lower or 'pdv' in txt_lower or 't1' in txt_lower: return "Cruce Punto de Venta (POS)"
-                    if 'flex' in txt_lower or 'parcial' in txt_lower or 't2' in txt_lower: return "Cruce por referencia parcial"
-                    if 'fifo' in txt_lower: return "Cruce por orden FIFO"
-                    if 'tarde' in txt_lower or 't5' in txt_lower: return "Cruce forzado (Modo Rescate)"
-                    if 'cumple todas' in txt_lower or 'exacto' in txt_lower: return "Cruce exacto"
+                    if 'reclasificación' in txt_lower or 'regla 6' in txt_lower:
+                        return "Registrado en otro banco"
+                    if 'diferencia de fecha' in txt_lower or 'diferencia f=' in txt_lower or 't3' in txt_lower:
+                        return "Diferencia de fecha"
+                    if 'diferencia de valor' in txt_lower or 'regla 7b' in txt_lower or 'dif=$' in txt_lower or 't4' in txt_lower:
+                        return "Diferencia de valor"
+                    if 'gasto' in txt_lower or 'comisión' in txt_lower or 't6' in txt_lower:
+                        return "Posible gasto bancario"
+                    if 'desbalanceado' in txt_lower:
+                        return "Descuadre por sector"
+                    if 'múltiples posiciones' in txt_lower or 'varias posiciones' in txt_lower:
+                        return "Varias posiciones sin cruzar"
+                    if 'ip/cb' in txt_lower or 'homologad' in txt_lower or 'pdv' in txt_lower or 't1' in txt_lower:
+                        return "Cruce Punto de Venta (POS)"
+                    if 'flex' in txt_lower or 'parcial' in txt_lower or 't2' in txt_lower:
+                        return "Cruce por referencia parcial"
+                    if 'fifo' in txt_lower:
+                        return "Cruce por orden FIFO"
+                    if 'tarde' in txt_lower or 't5' in txt_lower:
+                        return "Cruce forzado (Modo Rescate)"
+                    if 'cumple todas' in txt_lower or 'exacto' in txt_lower:
+                        return "Cruce exacto"
+                    
                     return "Revisión manual requerida"
 
+                # Aplicamos la traducción a las columnas visibles
                 df_final['Estado_Conciliacion'] = df_final['Estado_Tecnico'].apply(simplificar_estado)
                 df_final['Comentario'] = df_final['Comentario_Tecnico'].apply(simplificar_comentario)
 
@@ -1184,7 +1190,6 @@ if archivo_subido is not None:
                     return df_cualquiera[cols].copy()
 
                 cuadre_ok = filas_antes == (len(df) + len(filas_descartadas))
-
                 for c in [c for c in df_final.columns if 'fe.' in c.lower() or 'fecha' in c.lower() or 'fe-' in c.lower()]:
                     df_final[c] = pd.to_datetime(df_final[c], errors='coerce').dt.strftime('%d/%m/%Y')
 
@@ -1192,23 +1197,41 @@ if archivo_subido is not None:
                     idx = row.name
                     est = str(df_final.loc[idx, 'Estado_Tecnico']).strip().lower()
 
-                    if '(tarde)' in est: return [f'background-color: {COLOR_AMARILLO}; color: black'] * len(row)
-                    if 'cruce múltiple ip/cb' in est: return [f'background-color: {COLOR_GRIS}; color: black'] * len(row)
-                    if 'reclasificación' in est: return [f'background-color: {COLOR_DURAZNO}; color: black'] * len(row)
-                    if 'grupo salmon' in est or 'diferencia de fecha' in est: return [f'background-color: {COLOR_SALMON}; color: black'] * len(row)
-                    if 'diferencia de valor' in est:
-                        if 'regla 7b' in est: return [f'background-color: {COLOR_BLANCO}; color: black'] * len(row)
-                        return [f'background-color: {COLOR_MORADO}; color: black'] * len(row)
-                    if 'conciliado' in est or 'grupo azul' in est or 'flex' in est: return [f'background-color: {COLOR_AZUL}; color: black'] * len(row)
-                    if 'fecha fuera de rango' in est: return [f'background-color: {COLOR_BLANCO}; color: red'] * len(row)
-
-                    es_dz_multiposicion = (
-                        'dz posiciones múltiples' in est or
-                        'dz multiposición sin cruce' in est
-                    )
-                    if es_dz_multiposicion:
+                    # Prioridad 1: Errores / Bloqueos (Blanco con texto rojo)
+                    if 'fecha fuera de rango' in est: 
+                        return [f'background-color: {COLOR_BLANCO}; color: red'] * len(row)
+                        
+                    # Prioridad 2: Multi-posiciones DZ sin cruce (Verde)
+                    if 'dz posiciones múltiples' in est or 'dz multiposición sin cruce' in est:
                         return [f'background-color: {COLOR_VERDE}; color: black'] * len(row)
+                        
+                    # Prioridad 3: Conciliado perfecto o parcial flex (Azul)
+                    if 'conciliado' in est or 'grupo azul' in est or 'flex' in est: 
+                        return [f'background-color: {COLOR_AZUL}; color: black'] * len(row)
+                        
+                    # Prioridad 4: Cruce múltiple IP/CB (Gris)
+                    if 'cruce múltiple ip/cb' in est: 
+                        return [f'background-color: {COLOR_GRIS}; color: black'] * len(row)
+                        
+                    # Prioridad 5: Reclasificación (Durazno)
+                    if 'reclasificación' in est: 
+                        return [f'background-color: {COLOR_DURAZNO}; color: black'] * len(row)
+                        
+                    # Prioridad 6: Diferencia de Fecha (Salmón)
+                    if 'diferencia de fecha' in est or 'grupo salmon' in est: 
+                        return [f'background-color: {COLOR_SALMON}; color: black'] * len(row)
+                        
+                    # Prioridad 7: Diferencia de Valor (Morado / Blanco)
+                    if 'diferencia de valor' in est:
+                        if 'regla 7b' in est: 
+                            return [f'background-color: {COLOR_BLANCO}; color: black'] * len(row)
+                        return [f'background-color: {COLOR_MORADO}; color: black'] * len(row)
+                        
+                    # Prioridad 8: Sugerencias Tarde (Amarillo)
+                    if '(tarde)' in est or 'tarde t' in est: 
+                        return [f'background-color: {COLOR_AMARILLO}; color: black'] * len(row)
 
+                    # Por defecto Blanco
                     return [f'background-color: {COLOR_BLANCO}; color: black'] * len(row)
 
                 output = io.BytesIO()
@@ -1229,7 +1252,7 @@ if archivo_subido is not None:
 
                 pestanas_usadas = set()
                 def nombre_pestana(base):
-                    nombre = re.sub(r'[\\/*?:\[\]]', '-', str(base)[:31])
+                    nombre = re.sub(r'[\/*?:\[\]]', '-', str(base)[:31])
                     if not nombre.strip() or nombre.lower() == 'nan': nombre = "Sin_Banco"
                     original, cont = nombre, 1
                     while nombre in pestanas_usadas:
@@ -1256,8 +1279,8 @@ if archivo_subido is not None:
 
                 with pd.ExcelWriter(output, engine='openpyxl') as writer:
                     total_filas = len(df_final)
+                    
                     total_azul = int(df_final['Estado_Tecnico'].str.contains('Conciliado|grupo azul|Flex', na=False, regex=True).sum())
-
                     mask_gris = df_final['Estado_Tecnico'].str.contains('cruce múltiple ip/cb', case=False, na=False)
                     mask_durazno = df_final['Estado_Tecnico'].str.contains('reclasificación', case=False, na=False)
                     mask_salmon = df_final['Estado_Tecnico'].str.contains('grupo salmon|diferencia de fecha', case=False, na=False)
@@ -1307,6 +1330,7 @@ if archivo_subido is not None:
 
                     df_nov = df_final[df_final[col_G] == '40'].copy()
                     patron_alerta = 'Diferencia de fecha|Diferencia de valor|Reclasificación|grupo salmon|Sugerencia'
+                    
                     mask_alerta = df_nov['Estado_Tecnico'].str.contains(patron_alerta, na=False, regex=True)
                     mask_sin_candidato = df_nov['Candidatos_Conciliacion'].astype(str).str.strip().isin(['', 'nan', 'None'])
 
@@ -1338,16 +1362,16 @@ if archivo_subido is not None:
                         hoja_segura(writer, vista(filas_descartadas), 'DESCARTADAS_SIN_DOC_O_CT', estilo=False)
 
                 # =====================================================
-                # INTERFAZ FINAL
+                # INTERFAZ
                 # =====================================================
-                st.success("¡Conciliación completada con el motor de reglas CLM v33 (Nequi Rangos + Estructura C/G)!")
+                st.success("¡Conciliación completada con el motor de reglas CLM v30 (Textos Cortos)!")
                 if not cuadre_ok:
                     st.warning("⚠️ Revisa la pestaña DESCARTADAS, el total de filas no coincide.")
                 for adv in advertencias:
                     st.warning(f"⚠️ {adv}")
 
                 st.markdown(f'''
-**Leyenda de colores (basada en estado técnico interno):**
+**Leyenda de colores:**
 - <span style="background-color:{COLOR_AZUL}; padding:2px 8px;">Azul: Conciliado — cumple todas las reglas (A=H, misma F, mismo banco, importe exacto, sector coherente)</span>
 - <span style="background-color:{COLOR_VERDE}; padding:2px 8px;">Verde: Documentos DZ (clv=40) con múltiples posiciones que no lograron conciliar.</span>
 - <span style="background-color:{COLOR_SALMON}; padding:2px 8px;">Salmón: Diferencia de fecha F (hasta {TOPE_DIAS_ALERTA} días)</span>
@@ -1357,19 +1381,9 @@ if archivo_subido is not None:
 - <span style="background-color:{COLOR_GRIS}; padding:2px 8px;">Gris: Cruces múltiples IP/CB (Regla 3)</span>
 - <span style="background-color:{COLOR_BLANCO}; padding:2px 8px; border:1px solid #ccc;">Blanco: Pendientes / Otras Sugerencias / Bloqueos por cruces fuera del límite de días</span>
 
-**Novedad v33 — Nequi por rango en H, condicionado a estructura C/G:**
-- El rango numérico en Referencia (H) — **100.000-9.999.999** o **1.000.000.000-1.399.999.999** —
-  solo activa Nequi si además:
-  - **Clave contabiliz. (G) = "50"** (documentos del lado banco/CB), **o**
-  - **Clase de documento (C) = "DZ" y Clave contabiliz. (G) = "40"** (legalizaciones, lado débito).
-- Cualquier otra combinación (por ejemplo IP, o DZ con G distinto de 40) **no activa** Nequi por rango,
-  aunque H esté dentro del rango numérico.
-- La heurística textual (texto "NEQUI", Asignación "T"/"T-"/"T/"/"/ ") sigue siendo condición
-  suficiente independiente, sin exigir la estructura C/G.
-
-**Fixes heredados v31/v32:**
-- IP sin banco (nunca Reclasificación), Regla 3 sin fecha exacta, 7B/T4 paramétrica, Nequi anti-ambigüedad,
-  Verde estricto, Separación Estado_Tecnico/Visible, Motor blindado.
+**Novedades v30:**
+- **Estados y Comentarios simplificados:** Ahora la exportación usa frases ultra-cortas y ejecutivas (ej. "Registrado en otro banco" en lugar del texto técnico largo) para facilitar su revisión y el envío por correo.
+- Se conservan las columnas técnicas completas de forma invisible en el procesador para asegurar precisión en filtros y cruces.
 ''', unsafe_allow_html=True)
 
                 c1, c2, c3, c4, c5, c6 = st.columns(6)
@@ -1386,7 +1400,7 @@ if archivo_subido is not None:
                 st.download_button(
                     label="📥 Descargar Excel con Resultados",
                     data=output.getvalue(),
-                    file_name="Conciliacion_CLM_v33_Nequi_Rangos_Estructural.xlsx",
+                    file_name="Conciliacion_CLM_v31_Nequi.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
 
