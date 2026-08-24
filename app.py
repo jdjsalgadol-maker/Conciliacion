@@ -812,25 +812,27 @@ if archivo_subido is not None:
                     ]
 
                     n_dz, n_cb = len(grupo_dz), len(grupo_cb)
-                    if n_dz == 0 or n_cb == 0 or n_dz != n_cb:
+                    if n_dz == 0 or n_cb == 0:
                         return False
 
                     dz_ord = grupo_dz.sort_values(col_B).reset_index(drop=True)
                     cb_ord = grupo_cb.sort_values(col_B).reset_index(drop=True)
+                    n_pares = min(n_dz, n_cb)
 
-                    for i in range(n_dz):
+                    for i in range(n_pares):
                         id_dz = dz_ord.iloc[i]['ID_Linea']
                         id_cb = cb_ord.iloc[i]['ID_Linea']
                         if id_dz in usados or id_cb in usados:
                             continue
                         ok, _ = clasificar_y_registrar(
                             id_dz, id_cb,
-                            f"{comentario_base} (FIFO desambiguado: {n_dz} candidatos por lado, mismo importe ${importe_r:,.0f}, mismo banco y fecha)",
+                            f"{comentario_base} (FIFO desambiguado: emparejado {n_pares} de {max(n_dz, n_cb)} candidatos disponibles, mismo importe ${importe_r:,.0f})",
                             ignorar_sector=True
                         )
                         if ok:
                             usados.update([id_dz, id_cb])
-                    return True
+                    
+                    return id40 in usados
 
                 def procesar_candidato_nequi(id40, candidatos_50):
                     exactos = candidatos_50[candidatos_50['Abs_I'] == df.loc[df['ID_Linea'] == id40, 'Abs_I'].iloc[0]]
@@ -1423,7 +1425,7 @@ if archivo_subido is not None:
                 # =====================================================
                 # INTERFAZ
                 # =====================================================
-                st.success("¡Conciliación completada con el motor de reglas CLM v36 (Integral)!")
+                st.success("¡Conciliación completada con el motor de reglas CLM v37 (Integral + Parcial FIFO)!")
                 if not cuadre_ok:
                     st.warning("⚠️ Revisa la pestaña DESCARTADAS, el total de filas no coincide.")
                 for adv in advertencias:
@@ -1440,7 +1442,7 @@ if archivo_subido is not None:
 - <span style="background-color:{COLOR_GRIS}; padding:2px 8px;">Gris: Cruces múltiples IP/CB (Regla 3)</span>
 - <span style="background-color:{COLOR_BLANCO}; padding:2px 8px; border:1px solid #ccc;">Blanco: Pendientes / Otras Sugerencias / Bloqueos por cruces fuera del límite de días</span>
 
-**Novedades v36 (Integral):**
+**Novedades v37 (Integral + Parcial FIFO):**
 - **Nequi Dinámico:** Reconoce Nequi por rango numérico (Créditos) o por palabras clave / códigos "T", "/", "T-" (Legalizaciones), tolerando errores de escritura.
 - **Desambiguación FIFO en Nequi:** Resuelve automáticamente cruces cuando hay múltiples documentos Nequi del mismo importe y fecha.
 - **Estados y Comentarios simplificados:** La exportación usa frases cortas ("Registrado en otro banco", "Diferencia de fecha") para revisión rápida.
@@ -1461,7 +1463,7 @@ if archivo_subido is not None:
                 st.download_button(
                     label="📥 Descargar Excel con Resultados",
                     data=output.getvalue(),
-                    file_name="Conciliacion_CLM_v36_Integral.xlsx",
+                    file_name="Conciliacion_CLM_v37_Integral_Parcial_FIFO.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
 
