@@ -1,16 +1,14 @@
-# app_conciliacion_v31_final_corregido.py
+# app_conciliacion_v32_nequi_rangos.py
 #
-# VERSION FINAL ROBUSTA (v31)
-# Incorpora todas las correcciones de v28 + mejoras de v30 (textos cortos, salvoconducto sector Nequi).
-# Corrige 5 bugs críticos detectados en auditoría cruzada v27/v28/v30:
-#   BUG 1 (Crítico): Eliminado bloque "Reclasificación Exclusiva IP" que contradecía gate_seguridad.
-#   BUG 2: Regla 3 (IP Agrupado) ya no agrupa por Fecha_F (rompía lotes POS con rezago).
-#   BUG 3: Regla 7B / T4 usan variable tol_valor_purpura (no hardcoded 500).
-#   BUG 4: Excepción Nequi detecta ambigüedad explícita (múltiples candidatos) y no "roba" el primero en silencio.
-#   BUG 5: Color VERDE estricto: solo estados "DZ posiciones múltiples" / "DZ multiposición sin cruce".
-#   BUG 6 (v30): gate_seguridad/clasificar_y_registrar aceptan `ignorar_sector` para Nequi.
-#   BUG 7 (v30): Separación clara Estado_Tecnico (lógica/color) vs Estado_Conciliacion (exportación visible).
-#   BUG 8: Flujo garantizado sin frenos (try/except global, sin st.stop() en medio del motor).
+# VERSION v32: Actualización de la regla NEQUI.
+# La detección de NEQUI ahora requiere que la Referencia (col_H) esté en
+# uno de los rangos numéricos oficiales:
+#   - 100.000 a 9.999.999      (6-7 dígitos)
+#   - 1.000.000.000 a 1.399.999.999  (10 dígitos, empiezan por 10-13)
+# Además se conservan las heurísticas textuales previas (texto "NEQUI",
+# Asignación "T", "T-", "T/", "/") como condición SUFICIENTE alternativa.
+# Si NO se cumple ninguna, la línea NO entra en reglas NEQUI (Regla 8,
+# Excepción Nequi, Flex Nequi, etc.) y sigue el flujo normal DZ/CB.
 
 import streamlit as st
 import pandas as pd
@@ -19,7 +17,7 @@ import io
 import re
 from datetime import datetime
 
-st.set_page_config(page_title="Conciliación Integral CLM v31", layout="wide")
+st.set_page_config(page_title="Conciliación Integral CLM v32", layout="wide")
 st.markdown('''
     <style>
     #MainMenu {visibility: hidden;}
@@ -29,11 +27,11 @@ st.markdown('''
     </style>
 ''', unsafe_allow_html=True)
 
-st.title("🏦 Conciliación Automatizada — Motor CLM v31 (Final Corregido) 🤖")
+st.title("🏦 Conciliación Automatizada — Motor CLM v32 (Nequi Rangos) 🤖")
 st.write("Sube tu archivo consolidado. Selecciona 'Tarde' solo en la segunda pasada sobre el archivo depurado.")
 st.caption(
-    "v31: Motor blindado. Fixes: IP sin banco, Regla 3 sin fecha exacta, 7B paramétrica, Nequi anti-ambigüedad, "
-    "Verde estricto, Separación Estado_Tecnico/Visible, Flujo continuo. "
+    "v32: Nequi solo si Referencia (H) en rangos 100.000-9.999.999 o 1.000.000.000-1.399.999.999 "
+    "(o heurística textual). Resto de fixes v31 incluidos. "
     "A=Asignación, B=Nº doc, C=Clase doc, D=Fecha periodo, F=Fecha valor (PRINCIPAL), G=Clave, H=Referencia, I=Importe, K=Texto."
 )
 
@@ -78,7 +76,7 @@ archivo_subido = st.file_uploader("Selecciona el archivo de Excel o CSV", type=[
 if archivo_subido is not None:
     if st.button("🚀 Ejecutar Conciliación", use_container_width=True):
         try:
-            with st.spinner("Ejecutando motor de reglas CLM v31... Esto puede tomar unos segundos."):
+            with st.spinner("Ejecutando motor de reglas CLM v32... Esto puede tomar unos segundos."):
 
                 # =====================================================
                 # 1. LECTURA
@@ -263,11 +261,33 @@ if archivo_subido is not None:
                         if n in mapeo_datafono_ref.values(): return n
                     return None
 
-                def es_nequi(row):
+                # =====================================================
+                # DETECCIÓN NEQUI v32: Rangos numéricos en H + heurísticas textuales
+                # Rangos válidos:
+                #   100.000 - 9.999.999          (6-7 dígitos)
+                #   1.000.000.000 - 1.399.999.999 (10 dígitos, 10xx-13xx)
+                # Además: texto "NEQUI" en K/A/H, o Asignación "T", "T-", "T/", "/"
+                # =====================================================
+                def es_nequi_v32(row):
+                    # 1) Heurística textual (condición suficiente)
                     texto = f"{row.get(col_K,'') if col_K else ''} {row.get(col_A,'')} {row.get(col_H,'')}".upper()
-                    if 'NEQUI' in texto: return True
+                    if 'NEQUI' in texto:
+                        return True
                     val_a = str(row.get(col_A, '')).strip().upper()
-                    if val_a == 'T' or val_a.startswith('T-') or val_a.startswith('T/') or val_a == '/': return True
+                    if val_a == 'T' or val_a.startswith('T-') or val_a.startswith('T/') or val_a == '/':
+                        return True
+
+                    # 2) Rangos numéricos en Referencia (H)
+                    h_raw = str(row.get(col_H, '')).strip()
+                    h_clean = re.sub(r'\.0$', '', h_raw)
+                    if h_clean.isdigit():
+                        h_num = int(h_clean)
+                        # Rango 1: 100.000 a 9.999.999
+                        if 100_000 <= h_num <= 9_999_999:
+                            return True
+                        # Rango 2: 1.000.000.000 a 1.399.999.999
+                        if 1_000_000_000 <= h_num <= 1_399_999_999:
+                            return True
                     return False
 
                 def limpiar_numero(v):
@@ -284,7 +304,7 @@ if archivo_subido is not None:
                     h = solo_digitos(valor_h)
                     return bool(a and h and (a in h or h in a))
 
-                df['Es_Nequi'] = df.apply(es_nequi, axis=1)
+                df['Es_Nequi'] = df.apply(es_nequi_v32, axis=1)
                 df['H_Limpia'] = df[col_H].apply(limpiar_numero)
                 df['A_Limpia'] = df[col_A].apply(limpiar_numero)
 
@@ -353,7 +373,6 @@ if archivo_subido is not None:
                     parejas_registradas.append((id40, id50))
                     return True
 
-                # gate_seguridad y clasificar_y_registrar con parámetro ignorar_sector (Fix BUG 6)
                 def gate_seguridad(id40, id50, exigir_importe_exacto=True, tolerancia_valor=None, ignorar_sector=False):
                     res = df.loc[df['ID_Linea'].isin([id40, id50])]
                     ra = res[res['ID_Linea'] == id40].iloc[0]
@@ -388,7 +407,6 @@ if archivo_subido is not None:
                     resultado['banco_a'] = banco_a
                     resultado['banco_b'] = banco_b
 
-                    # FIX BUG 1 (Core): IP nunca evalúa banco
                     if es_ip:
                         resultado['mismo_banco'] = True
                     else:
@@ -397,7 +415,6 @@ if archivo_subido is not None:
                     sector_a = str(ra.get('Sector', '')).strip()
                     sector_b = str(rb.get('Sector', '')).strip()
                     
-                    # FIX BUG 6: Salvoconducto de sector para Nequi
                     if not ignorar_sector:
                         if sector_a not in ('', 'Sin clasificar') and sector_b not in ('', 'Sin clasificar'):
                             if sector_a != sector_b:
@@ -468,8 +485,7 @@ if archivo_subido is not None:
                     return True, estado_final
 
                 # =====================================================
-                # Regla 3: IP Homologados Agrupado
-                # FIX BUG 2: groupby SIN col_F (fecha valor)
+                # Regla 3: IP Homologados Agrupado (sin fecha en groupby)
                 # =====================================================
                 ind_ip_exacto = set()
                 ind_ip_tolerancia = set()
@@ -480,7 +496,6 @@ if archivo_subido is not None:
                     df_cb = df[(df[col_C].astype(str).str.upper() == 'CB') & (df[col_G] == '50') & df['Ref_H_Homologada'].notna()]
 
                     if not df_ip.empty and not df_cb.empty:
-                        # FIX BUG 2: Agrupar por Banco + Ref Homologada SOLAMENTE
                         grp_ip = df_ip.groupby([col_banco, 'Ref_H_Homologada'])['Abs_I'].sum().reset_index(name='S_IP')
                         grp_cb = df_cb.groupby([col_banco, 'Ref_H_Homologada'])['Abs_I'].sum().reset_index(name='S_CB')
                         m = pd.merge(grp_cb, grp_ip, on=[col_banco, 'Ref_H_Homologada'])
@@ -548,13 +563,11 @@ if archivo_subido is not None:
                         escribir_comentario(idl, "PDV (IP): requiere referencia homologada de base de datos o coincidencia por Zona.", append=False)
 
                 # ================================================================
-                # FIX BUG 1 (Structural): BLOQUE "ALERTA RECLASIFICACIÓN EXCLUSIVA IP" ELIMINADO POR COMPLETO.
-                # Ese bloque buscaba CB en banco DISTINTO y marcaba durazno, robando el candidato
-                # antes de que gate_seguridad (que ignora banco para IP) pudiera actuar.
+                # FIX BUG 1: BLOQUE "ALERTA RECLASIFICACIÓN EXCLUSIVA IP" ELIMINADO
                 # ================================================================
 
                 # =====================================================
-                # Regla 8: NEQUI POR TOTALES Y FIFO
+                # Regla 8: NEQUI POR TOTALES Y FIFO (solo líneas Es_Nequi=True)
                 # =====================================================
                 ind_nequi8_azul = set()
                 ind_nequi8_sugerencia = set()
@@ -660,8 +673,7 @@ if archivo_subido is not None:
                     parejas_registradas.append((id40, id50))
 
                 # =====================================================
-                # Regla 6 EXPLÍCITA — RECLASIFICACIÓN DE BANCO
-                # (Solo DZ/CB; IP ya resuelto sin comparar banco arriba)
+                # Regla 6 EXPLÍCITA — RECLASIFICACIÓN DE BANCO (Solo DZ/CB)
                 # =====================================================
                 df_40 = df_40[~df_40['ID_Linea'].isin(usados)]
                 df_50 = df_50[~df_50['ID_Linea'].isin(usados)]
@@ -724,8 +736,7 @@ if archivo_subido is not None:
                             df.loc[df['ID_Linea'] == r['ID_Linea'], 'Comentario'] = f"Sector '{sector}' desbalanceado. Débitos candidatos: {docs40_txt}"
 
                 # ================================================================
-                # PARCHE v33: REGLA 7B - DIFERENCIA DE VALOR (Alertas Sugeridas)
-                # FIX BUG 3: usa tol_valor_purpura variable
+                # PARCHE v33: REGLA 7B - DIFERENCIA DE VALOR (usa tol_valor_purpura)
                 # ================================================================
                 pend40_7b = df[(df[col_G] == '40') & (~df['ID_Linea'].isin(usados)) & (df['Estado_Conciliacion'] == 'Pendiente')].copy()
                 pend50_7b = df[(df[col_G] == '50') & (~df['ID_Linea'].isin(usados)) & (df['Estado_Conciliacion'] == 'Pendiente')].copy()
@@ -744,7 +755,6 @@ if archivo_subido is not None:
                     posibles = posibles[posibles['_dif_dias'] <= TOPE_DIAS_ALERTA]
                     if posibles.empty: continue
                     posibles['_dif_valor'] = (posibles['Abs_I'] - fila40['Abs_I']).abs()
-                    # FIX BUG 3: tol_valor_purpura en lugar de 500 fijo
                     posibles = posibles[posibles['_dif_valor'] > tol_valor_purpura]
                     if posibles.empty: continue
 
@@ -763,7 +773,7 @@ if archivo_subido is not None:
                     usados.update([id40, id50])
 
                 # =====================================================
-                # EXCEPCIÓN NEQUI (A = "Nequi", C = DZ) - DOBLE PASADA
+                # EXCEPCIÓN NEQUI (solo líneas Es_Nequi=True)
                 # FIX BUG 4: Detección explícita de ambigüedad
                 # FIX BUG 6: Usa ignorar_sector=True
                 # =====================================================
@@ -819,7 +829,6 @@ if archivo_subido is not None:
                     ].copy()
                     if candidatos_50.empty: continue
 
-                    # Nequi no filtra por sector (salvoconducto)
                     candidatos_50['_dif_dias'] = (candidatos_50['Fecha_F'] - r40['Fecha_F']).dt.days.abs().fillna(999)
                     candidatos_50 = candidatos_50[candidatos_50['_dif_dias'] == 0]
                     if candidatos_50.empty: continue
@@ -1105,15 +1114,13 @@ if archivo_subido is not None:
                     df.loc[sin_p & (df['Comentario'] == ''), 'Comentario'] = 'Sin coincidencia ni sugerencia que cumpla reglas de seguridad.'
 
                 # =====================================================
-                # EXPORTACIÓN: Separación Estado_Tecnico (lógica) vs Estado_Conciliacion (visible)
+                # EXPORTACIÓN: Separación Estado_Tecnico vs Estado_Conciliacion
                 # =====================================================
                 df_final = df.drop(columns=['ID_Linea', 'Abs_I', 'Fecha_F', 'Fecha_D'], errors='ignore')
                 
-                # Preservamos estado técnico para coloreo y resumen
                 df_final['Estado_Tecnico'] = df_final['Estado_Conciliacion']
                 df_final['Comentario_Tecnico'] = df_final['Comentario']
 
-                # Simplificación para usuario final (Feature v30)
                 def simplificar_estado(est):
                     est_lower = str(est).lower()
                     if 'conciliado' in est_lower or 'grupo azul' in est_lower or 'flex' in est_lower:
@@ -1167,7 +1174,7 @@ if archivo_subido is not None:
                     df_final[c] = pd.to_datetime(df_final[c], errors='coerce').dt.strftime('%d/%m/%Y')
 
                 # =====================================================
-                # FUNCION DE COLOR BASADA EN ESTADO_TECNICO (Precisa)
+                # FUNCION DE COLOR BASADA EN ESTADO_TECNICO
                 # =====================================================
                 def color_fila(row):
                     idx = row.name
@@ -1183,7 +1190,7 @@ if archivo_subido is not None:
                     if 'conciliado' in est or 'grupo azul' in est or 'flex' in est: return [f'background-color: {COLOR_AZUL}; color: black'] * len(row)
                     if 'fecha fuera de rango' in est: return [f'background-color: {COLOR_BLANCO}; color: red'] * len(row)
 
-                    # FIX BUG 5: Verde ESTRICTO solo para DZ multiposición explícito
+                    # Verde ESTRICTO solo para DZ multiposición
                     es_dz_multiposicion = (
                         'dz posiciones múltiples' in est or
                         'dz multiposición sin cruce' in est
@@ -1251,7 +1258,6 @@ if archivo_subido is not None:
                     mask_fuera_rango = df_final['Estado_Tecnico'].str.contains('fecha fuera de rango', case=False, na=False)
                     mask_amarillo = df_final['Estado_Tecnico'].str.contains('tarde', case=False, na=False)
 
-                    # FIX BUG 5: Verde estricto en resumen también
                     mask_verde = (df_final[col_G] == '40') & df_final['Estado_Tecnico'].str.contains(
                         'dz posiciones múltiples|dz multiposición sin cruce', case=False, na=False, regex=True
                     )
@@ -1326,7 +1332,7 @@ if archivo_subido is not None:
                 # =====================================================
                 # INTERFAZ FINAL
                 # =====================================================
-                st.success("¡Conciliación completada con el motor de reglas CLM v31 (Final Corregido)!")
+                st.success("¡Conciliación completada con el motor de reglas CLM v32 (Nequi Rangos)!")
                 if not cuadre_ok:
                     st.warning("⚠️ Revisa la pestaña DESCARTADAS, el total de filas no coincide.")
                 for adv in advertencias:
@@ -1343,14 +1349,15 @@ if archivo_subido is not None:
 - <span style="background-color:{COLOR_GRIS}; padding:2px 8px;">Gris: Cruces múltiples IP/CB (Regla 3)</span>
 - <span style="background-color:{COLOR_BLANCO}; padding:2px 8px; border:1px solid #ccc;">Blanco: Pendientes / Otras Sugerencias / Bloqueos por cruces fuera del límite de días</span>
 
-**Mejoras v31 (Final):**
-- **Estados y Comentarios simplificados** en la exportación visible (ej. "Registrado en otro banco" en vez de texto técnico largo).
-- **IP sin banco**: Las líneas IP **NUNCA** generan Reclasificación de banco (Fix crítico v27/v28).
-- **Regla 3 IP Agrupado**: No exige fecha exacta para agrupar (Fix v28).
-- **Regla 7B / T4 Paramétrica**: Usa el tope morado configurado por el usuario (Fix v28).
-- **Nequi Anti-Ambigüedad**: Detecta múltiples candidatos y avisa "ambigua" en vez de tomar el primero (Fix v28).
-- **Verde Estricto**: Solo para DZ multiposición real, no para sugerencias genéricas (Fix v28).
-- **Motor Blindado**: Flujo completo garantizado sin `st.stop()` intermedios.
+**Novedad v32 — Detección NEQUI por rangos en Referencia (H):**
+- Una línea se considera NEQUI **solo si** su Referencia (columna H) está en:
+  - **100.000 – 9.999.999** (6-7 dígitos)
+  - **1.000.000.000 – 1.399.999.999** (10 dígitos, empiezan por 10-13)
+- **O** si cumple heurística textual previa: texto "NEQUI" en K/A/H, o Asignación "T", "T-", "T/", "/".
+- Si no se cumple ninguna, la línea **no entra** en reglas NEQUI (Regla 8, Excepción Nequi, etc.) y sigue flujo normal DZ/CB.
+
+**Fixes heredados v31:**
+- IP sin banco (nunca Reclasificación), Regla 3 sin fecha exacta, 7B/T4 paramétrica, Nequi anti-ambigüedad, Verde estricto, Separación Estado_Tecnico/Visible, Motor blindado.
 ''', unsafe_allow_html=True)
 
                 c1, c2, c3, c4, c5, c6 = st.columns(6)
@@ -1367,7 +1374,7 @@ if archivo_subido is not None:
                 st.download_button(
                     label="📥 Descargar Excel con Resultados",
                     data=output.getvalue(),
-                    file_name="Conciliacion_CLM_v31_Final_Corregido.xlsx",
+                    file_name="Conciliacion_CLM_v32_Nequi_Rangos.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
 
