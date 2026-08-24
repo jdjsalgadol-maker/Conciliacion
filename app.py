@@ -16,7 +16,7 @@ st.markdown('''
     </style>
 ''', unsafe_allow_html=True)
 
-st.title("🏦 Conciliación Automatizada — Motor CLM v35 (Nequi FIFO Desambiguado) 🤖")
+st.title("🏦 Conciliación Automatizada — 🤖")
 st.write("Sube tu archivo consolidado. Selecciona 'Tarde' solo en la segunda pasada sobre el archivo depurado.")
 st.caption(
     "v35: cuando hay N candidatos Nequi con el mismo importe/banco/fecha en ambos lados (N=N), "
