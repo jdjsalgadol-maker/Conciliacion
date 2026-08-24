@@ -19,9 +19,7 @@ st.markdown('''
 st.title("🏦 Conciliación Automatizada — 🤖")
 st.write("Sube tu archivo consolidado. Selecciona 'Tarde' solo en la segunda pasada sobre el archivo depurado.")
 st.caption(
-    "v35: cuando hay N candidatos Nequi con el mismo importe/banco/fecha en ambos lados (N=N), "
-    "se concilian por FIFO (orden de documento) en vez de quedar 'ambiguos'. "
-    "A=Asignación, B=Nº doc, C=Clase doc, D=Fecha periodo, F=Fecha valor (PRINCIPAL), G=Clave, H=Referencia, I=Importe, K=Texto."
+    "Welcome"
 )
 
 with st.expander("⚙️ Parámetros de tolerancia"):
