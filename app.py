@@ -245,7 +245,7 @@ if archivo_subido is not None:
                     if h_val in mapeo_referencias_dist: return mapeo_referencias_dist[h_val]
 
                     t_full = f"{texto_k} {texto_nov} {texto_a} {h_val}".upper()
-                    nums = re.findall(r'\d{4}', t_full)
+                    nums = re.findall(r' \d{4} ', t_full)
                     for n in nums:
                         num = int(n)
                         if 2000 <= num <= 2999: return 'Dist Buga'
@@ -260,12 +260,12 @@ if archivo_subido is not None:
                 def obtener_ref_homologada(row):
                     texto = f" {row.get(col_H,'')} {row.get(col_A,'')} {row.get(col_K,'') if col_K else ''} {row.get(col_novedad,'') if col_novedad else ''} ".upper()
                     # 1. Buscamos códigos de 8 dígitos autorizados
-                    n8 = re.findall(r'\d{8}', texto)
+                    n8 = re.findall(r' \d{8} ', texto)
                     for n in n8:
                         if n in dict_8_to_list4:
                             return n
                     # 2. Buscamos códigos de 4 dígitos que mapeen a 8 dígitos
-                    n4 = re.findall(r'\d{4}', texto)
+                    n4 = re.findall(r' \d{4} ', texto)
                     for n in n4:
                         for k8, list_4 in dict_8_to_list4.items():
                             if n in list_4:
@@ -455,13 +455,29 @@ if archivo_subido is not None:
 
                     banco_a = str(ra[col_banco]).strip()
                     banco_b = str(rb[col_banco]).strip()
-                    resultado['banco_a'] = banco_a
-                    resultado['banco_b'] = banco_b
+                    
+                    # Limpiamos el nombre del banco para el comentario (ej: BANCOLOMBIA S.A. -> Bancolombia)
+                    def limpiar_nombre_banco(nombre_banco):
+                        nombre = str(nombre_banco).upper()
+                        if 'BANCOLOMBIA' in nombre: return 'Bancolombia'
+                        if 'DAVIVIENDA' in nombre: return 'Davivienda'
+                        if 'DAVIBANK' in nombre: return 'Davivienda'
+                        if 'BOGOTA' in nombre: return 'Banco de Bogotá'
+                        if 'CAJA SOCIAL' in nombre: return 'Banco Caja Social'
+                        if 'BILBAO' in nombre or 'BBVA' in nombre: return 'BBVA'
+                        if 'AGRARIO' in nombre: return 'Banco Agrario'
+                        if 'AV V' in nombre or 'VILLAS' in nombre: return 'Banco AV Villas'
+                        if 'OCCIDENTE' in nombre: return 'Banco de Occidente'
+                        if 'SUDAMERIS' in nombre: return 'Banco GNB Sudameris'
+                        return nombre.title()
+
+                    resultado['banco_a'] = limpiar_nombre_banco(banco_a)
+                    resultado['banco_b'] = limpiar_nombre_banco(banco_b)
 
                     if es_ip:
                         resultado['mismo_banco'] = True
                     else:
-                        resultado['mismo_banco'] = (banco_a == banco_b)
+                        resultado['mismo_banco'] = (banco_a == banco_b) # La comparación se hace con el original
 
                     sector_a = str(ra.get('Sector', '')).strip()
                     sector_b = str(rb.get('Sector', '')).strip()
@@ -514,18 +530,11 @@ if archivo_subido is not None:
                             estado_final = 'Conciliado - IP (banco no evaluado, fecha e importe exactos)'
                     elif not res['mismo_banco']:
                         estado_final = 'Reclasificación de banco'
-                        # FIX: antes se guardaba el MISMO texto en ambas filas, escrito
-                        # solo desde la perspectiva del lado 40 ("registrado en banco_a").
-                        # La fila del lado 50 terminaba mostrando un banco que NO era el
-                        # de su propia columna. Ahora cada fila indica primero SU banco
-                        # real y luego el de la contraparte, en la columna N.
                         partes_comentario_40 = partes_comentario + [
-                            f"Reclasificación de banco: esta línea está en '{res['banco_a']}'; "
-                            f"su contraparte (Doc. {int(df.loc[df['ID_Linea']==id50, col_B].iloc[0])}) está en '{res['banco_b']}'."
+                            f"Banco incorrecto '{res['banco_a']}', el banco correcto es '{res['banco_b']}'."
                         ]
                         partes_comentario_50 = partes_comentario + [
-                            f"Reclasificación de banco: esta línea está en '{res['banco_b']}'; "
-                            f"su contraparte (Doc. {int(df.loc[df['ID_Linea']==id40, col_B].iloc[0])}) está en '{res['banco_a']}'."
+                            f"Banco correcto '{res['banco_b']}', la contraparte está en el banco incorrecto '{res['banco_a']}'."
                         ]
                     elif res['dif_dias'] and res['dif_dias'] > 0:
                         estado_final = 'Diferencia de fecha'
@@ -1043,6 +1052,21 @@ if archivo_subido is not None:
                     if grupo50.empty:
                         continue
 
+                    # Función para limpiar el nombre del banco (misma que en gate_seguridad)
+                    def limpiar_nombre_banco(nombre_banco):
+                        nombre = str(nombre_banco).upper()
+                        if 'BANCOLOMBIA' in nombre: return 'Bancolombia'
+                        if 'DAVIVIENDA' in nombre: return 'Davivienda'
+                        if 'DAVIBANK' in nombre: return 'Davivienda'
+                        if 'BOGOTA' in nombre: return 'Banco de Bogotá'
+                        if 'CAJA SOCIAL' in nombre: return 'Banco Caja Social'
+                        if 'BILBAO' in nombre or 'BBVA' in nombre: return 'BBVA'
+                        if 'AGRARIO' in nombre: return 'Banco Agrario'
+                        if 'AV V' in nombre or 'VILLAS' in nombre: return 'Banco AV Villas'
+                        if 'OCCIDENTE' in nombre: return 'Banco de Occidente'
+                        if 'SUDAMERIS' in nombre: return 'Banco GNB Sudameris'
+                        return nombre.title()
+
                     if len(grupo40) == 1 and len(grupo50) == 1:
                         id40 = grupo40.iloc[0]['ID_Linea']
                         id50 = grupo50.iloc[0]['ID_Linea']
@@ -1055,11 +1079,11 @@ if archivo_subido is not None:
                                           "banco, pero el Sector no coincide o no está clasificado.")
                         else:
                             estado = 'Reclasificación de banco'
+                            banco_a_limpio = limpiar_nombre_banco(ra[col_banco])
+                            banco_b_limpio = limpiar_nombre_banco(rb[col_banco])
                             comentario = (
-                                f"Regla 6B: sin coincidencia de Asignación/Referencia ni de Sector, "
-                                f"pero es el ÚNICO candidato con la misma Fecha valor e importe exacto "
-                                f"(${importe_z:,.0f}). Registrado en '{ra[col_banco]}'; banco esperado "
-                                f"'{rb[col_banco]}'."
+                                f"Banco incorrecto '{banco_a_limpio}', el banco correcto es '{banco_b_limpio}'. "
+                                f"(Regla 6B: único candidato con misma Fecha e importe exacto por ${importe_z:,.0f})"
                             )
                         for idx in (id40, id50):
                             df.loc[df['ID_Linea'] == idx, 'Estado_Conciliacion'] = estado
@@ -1223,8 +1247,8 @@ if archivo_subido is not None:
                         if 'no cuadra' in txt_lower or 'ambigua' in txt_lower or 'múltiples' in txt_lower or 'varios' in txt_lower or 'candidatos' in txt_lower:
                             return "Revisar Nequi (Ambigüedad o Totales)"
                         return "Cruce Nequi válido"
-                    if 'reclasificación' in txt_lower or 'regla 6' in txt_lower:
-                        return "Registrado en otro banco"
+                    if 'reclasificación' in txt_lower or 'regla 6' in txt_lower or 'banco incorrecto' in txt_lower:
+                        return txt # Retorna el texto detallado con los nombres de los bancos
                     if 'diferencia de fecha' in txt_lower or 'diferencia f=' in txt_lower or 't3' in txt_lower:
                         return "Diferencia de fecha"
                     if 'diferencia de valor' in txt_lower or 'regla 7b' in txt_lower or 'dif=$' in txt_lower or 't4' in txt_lower:
