@@ -299,22 +299,16 @@ if archivo_subido is not None:
                     # Cualquiera de los dos (palabra o prefijo) cuenta como un indicador válido de Nequi
                     es_indicador_texto = tiene_palabra_nequi or tiene_prefijo_a
 
-                    # 1. Validación para Créditos (G = 50) -> Exige Rango
+                    # 1. Validación ESTRICTA para Créditos (G = 50) -> Exige Rango
                     if val_g == '50':
-                        if is_h_nequi_range:
-                            return True
+                        return is_h_nequi_range
 
                     # 2. Validación para Legalizaciones (C = DZ y G = 40) -> Exige Solo Texto/Prefijo
                     if val_g == '40' and val_c == 'DZ':
-                        if es_indicador_texto:
-                            return True
-                        return False
+                        return es_indicador_texto
 
-                    # 3. Validaciones heredadas para otros documentos (No DZ)
-                    if es_indicador_texto: 
-                        return True
-                        
-                    return False
+                    # 3. Validaciones heredadas para otros documentos (No DZ y No G=50)
+                    return es_indicador_texto
 
                 def limpiar_numero(v):
                     if pd.isna(v): return ''
@@ -483,11 +477,10 @@ if archivo_subido is not None:
                     sector_b = str(rb.get('Sector', '')).strip()
                     
                     if not ignorar_sector:
-                        if sector_a not in ('', 'Sin clasificar') and sector_b not in ('', 'Sin clasificar'):
-                            if sector_a != sector_b:
-                                resultado['motivo'] = f"Sector distinto ({sector_a} vs {sector_b})"
-                                resultado['mismo_sector'] = False
-                                return resultado
+                        if sector_a != sector_b:
+                            resultado['motivo'] = f"Sector distinto ({sector_a} vs {sector_b})"
+                            resultado['mismo_sector'] = False
+                            return resultado
 
                     imp_a = abs(ra[col_I])
                     imp_b = abs(rb[col_I])
@@ -576,9 +569,9 @@ if archivo_subido is not None:
                     df_cb = df[(df[col_C].astype(str).str.upper() == 'CB') & (df[col_G] == '50') & df['Ref_H_Homologada'].notna()]
 
                     if not df_ip.empty and not df_cb.empty:
-                        grp_ip = df_ip.groupby([col_banco, 'Ref_H_Homologada'])['Abs_I'].sum().reset_index(name='S_IP')
-                        grp_cb = df_cb.groupby([col_banco, 'Ref_H_Homologada'])['Abs_I'].sum().reset_index(name='S_CB')
-                        m = pd.merge(grp_cb, grp_ip, on=[col_banco, 'Ref_H_Homologada'])
+                        grp_ip = df_ip.groupby([col_banco, 'Sector', 'Ref_H_Homologada'])['Abs_I'].sum().reset_index(name='S_IP')
+                        grp_cb = df_cb.groupby([col_banco, 'Sector', 'Ref_H_Homologada'])['Abs_I'].sum().reset_index(name='S_CB')
+                        m = pd.merge(grp_cb, grp_ip, on=[col_banco, 'Sector', 'Ref_H_Homologada'])
                         m['DifV'] = (m['S_CB'] - m['S_IP']).abs()
                         max_s = m[['S_CB', 'S_IP']].max(axis=1).clip(lower=1)
                         m['Pct'] = m['DifV'] / max_s
@@ -587,9 +580,9 @@ if archivo_subido is not None:
                         con_tol = m[(m['DifV'] > 0) & ((m['DifV'] <= tol_valor_abs_general) | (m['Pct'] <= tol_valor_pct_general))]
 
                         def procesar_grupo_ip(fila, es_exacto):
-                            b, rh = fila[col_banco], fila['Ref_H_Homologada']
-                            sub_ip = df_ip[(df_ip[col_banco] == b) & (df_ip['Ref_H_Homologada'] == rh)]
-                            sub_cb = df_cb[(df_cb[col_banco] == b) & (df_cb['Ref_H_Homologada'] == rh)]
+                            b, s, rh = fila[col_banco], fila['Sector'], fila['Ref_H_Homologada']
+                            sub_ip = df_ip[(df_ip[col_banco] == b) & (df_ip['Sector'] == s) & (df_ip['Ref_H_Homologada'] == rh)]
+                            sub_cb = df_cb[(df_cb[col_banco] == b) & (df_cb['Sector'] == s) & (df_cb['Ref_H_Homologada'] == rh)]
                             ip_ids = [i for i in sub_ip['ID_Linea'].tolist() if i not in usados]
                             cb_ids = [i for i in sub_cb['ID_Linea'].tolist() if i not in usados]
                             if not ip_ids or not cb_ids: return
@@ -633,10 +626,10 @@ if archivo_subido is not None:
                     df_cb_disponible = df_cb_disponible[df_cb_disponible[col_C].astype(str).str.upper() != 'IP']
 
                 if not df_nequi_dz.empty and not df_cb_disponible.empty:
-                    for (banco_g, fecha_g), grupo_dz in df_nequi_dz.groupby([col_banco, 'Fecha_F']):
+                    for (banco_g, sector_g, fecha_g), grupo_dz in df_nequi_dz.groupby([col_banco, 'Sector', 'Fecha_F']):
                         grupo_dz = grupo_dz[~grupo_dz['ID_Linea'].isin(usados)]
                         if grupo_dz.empty: continue
-                        grupo_cb = df_cb_disponible[(df_cb_disponible[col_banco] == banco_g) & (df_cb_disponible['Fecha_F'] == fecha_g) & (~df_cb_disponible['ID_Linea'].isin(usados))]
+                        grupo_cb = df_cb_disponible[(df_cb_disponible[col_banco] == banco_g) & (df_cb_disponible['Sector'] == sector_g) & (df_cb_disponible['Fecha_F'] == fecha_g) & (~df_cb_disponible['ID_Linea'].isin(usados))]
                         if grupo_cb.empty: continue
 
                         n_dz, n_cb = len(grupo_dz), len(grupo_cb)
@@ -662,7 +655,7 @@ if archivo_subido is not None:
                             diff_total = abs(total_dz - total_cb)
                             motivo = f"cantidad DZ={n_dz} vs CB={n_cb}" if n_dz != n_cb else f"totales distintos (dif=${diff_total:,.0f})"
                             docs_dz, docs_cb = resumen_docs(dz_ord), resumen_docs(cb_ord)
-                            texto_cand = f"Grupo NEQUI {banco_g} {fecha_g}: DZ candidatos: {docs_dz} || CB candidatos: {docs_cb}"
+                            texto_cand = f"Grupo NEQUI {banco_g} Sector {sector_g} {fecha_g}: DZ candidatos: {docs_dz} || CB candidatos: {docs_cb}"
                             comentario = f"Regla 8 Nequi: grupo NO cuadra exacto ({motivo}). Requiere revisión manual."
                             for _, fila in pd.concat([dz_ord, cb_ord]).iterrows():
                                 idl = fila['ID_Linea']
@@ -692,12 +685,12 @@ if archivo_subido is not None:
                         ok, _ = clasificar_y_registrar(id40, id50, base_txt)
                         if ok: usados.update([id40, id50])
 
-                emparejar_1a1_por_llave(df_40, df_50, [col_banco, 'Abs_I', col_A], [col_banco, 'Abs_I', col_H], "Regla 1: Asignación (A) coincide exacta con Referencia (H).")
+                emparejar_1a1_por_llave(df_40, df_50, [col_banco, 'Sector', 'Abs_I', col_A], [col_banco, 'Sector', 'Abs_I', col_H], "Regla 1: Asignación (A) coincide exacta con Referencia (H).")
 
                 # REGLA 1 LIMPIA: Anti-colisión de 4 dígitos (exige len >= 5)
                 df_40_limpia = df_40[(~df_40['ID_Linea'].isin(usados)) & (df_40['A_Limpia'] != '') & (df_40['A_Limpia'].str.len() >= 5)].copy()
                 df_50_limpia = df_50[(~df_50['ID_Linea'].isin(usados)) & (df_50['H_Limpia'] != '') & (df_50['H_Limpia'].str.len() >= 5)].copy()
-                emparejar_1a1_por_llave(df_40_limpia, df_50_limpia, [col_banco, 'Abs_I', 'A_Limpia'], [col_banco, 'Abs_I', 'H_Limpia'], "Regla 1 (limpia): Asignación limpia coincide con Referencia limpia.")
+                emparejar_1a1_por_llave(df_40_limpia, df_50_limpia, [col_banco, 'Sector', 'Abs_I', 'A_Limpia'], [col_banco, 'Sector', 'Abs_I', 'H_Limpia'], "Regla 1 (limpia): Asignación limpia coincide con Referencia limpia.")
 
                 # ================================================================
                 # FLEX POR REFERENCIA PARCIAL (Unica excepcion a 4 dias)
@@ -709,6 +702,7 @@ if archivo_subido is not None:
                 for id40, fila40 in pend40_flex.iterrows():
                     candidatos = pend50_flex[
                         (pend50_flex[col_banco] == fila40[col_banco]) &
+                        (pend50_flex['Sector'] == fila40['Sector']) &
                         (pend50_flex['Abs_I'] == fila40['Abs_I']) &
                         (~pend50_flex['ID_Linea'].isin(usados))
                     ].copy()
@@ -752,12 +746,12 @@ if archivo_subido is not None:
                         ok, _ = clasificar_y_registrar(id40, id50, base_txt)
                         if ok: usados.update([id40, id50])
 
-                emparejar_reclasificacion(df_40, df_50, ['Abs_I', col_A], ['Abs_I', col_H], "Regla 6: Asignación (A) coincide con Referencia (H), pero el banco registrado difiere.")
+                emparejar_reclasificacion(df_40, df_50, ['Sector', 'Abs_I', col_A], ['Sector', 'Abs_I', col_H], "Regla 6: Asignación (A) coincide con Referencia (H), pero el banco registrado difiere.")
                 
                 # REGLA 6 LIMPIA: Anti-colisión de 4 dígitos (exige len >= 5)
                 df_40_r6_limpia = df_40[(~df_40['ID_Linea'].isin(usados)) & (df_40['A_Limpia'] != '') & (df_40['A_Limpia'].str.len() >= 5)].copy()
                 df_50_r6_limpia = df_50[(~df_50['ID_Linea'].isin(usados)) & (df_50['H_Limpia'] != '') & (df_50['H_Limpia'].str.len() >= 5)].copy()
-                emparejar_reclasificacion(df_40_r6_limpia, df_50_r6_limpia, ['Abs_I', 'A_Limpia'], ['Abs_I', 'H_Limpia'], "Regla 6 (limpia): Asignación limpia coincide con Referencia limpia, pero el banco registrado difiere.")
+                emparejar_reclasificacion(df_40_r6_limpia, df_50_r6_limpia, ['Sector', 'Abs_I', 'A_Limpia'], ['Sector', 'Abs_I', 'H_Limpia'], "Regla 6 (limpia): Asignación limpia coincide con Referencia limpia, pero el banco registrado difiere.")
 
                 # ================================================================
                 # SECTORIZACION MULTIPLE FIFO
@@ -847,15 +841,18 @@ if archivo_subido is not None:
                     banco_r = r40[col_banco]
                     fecha_r = r40['Fecha_F']
                     importe_r = r40['Abs_I']
+                    sector_r = r40['Sector']
 
                     grupo_dz = df[
                         (df[col_G] == '40') & (df['Es_Nequi'] == True) &
                         (~df['ID_Linea'].isin(usados)) &
                         (df[col_banco] == banco_r) &
+                        (df['Sector'] == sector_r) &
                         (df['Fecha_F'] == fecha_r) &
                         (df['Abs_I'] == importe_r)
                     ]
                     grupo_cb = candidatos_50[
+                        (candidatos_50['Sector'] == sector_r) &
                         (candidatos_50['Abs_I'] == importe_r) &
                         (~candidatos_50['ID_Linea'].isin(usados))
                     ]
@@ -876,7 +873,7 @@ if archivo_subido is not None:
                         ok, _ = clasificar_y_registrar(
                             id_dz, id_cb,
                             f"{comentario_base} (FIFO desambiguado: emparejado {n_pares} de {max(n_dz, n_cb)} candidatos disponibles, mismo importe ${importe_r:,.0f})",
-                            ignorar_sector=True
+                            ignorar_sector=False
                         )
                         if ok:
                             usados.update([id_dz, id_cb])
@@ -887,7 +884,7 @@ if archivo_subido is not None:
                     exactos = candidatos_50[candidatos_50['Abs_I'] == df.loc[df['ID_Linea'] == id40, 'Abs_I'].iloc[0]]
                     if len(exactos) == 1:
                         id50 = exactos.iloc[0]['ID_Linea']
-                        ok, _ = clasificar_y_registrar(id40, id50, "Excepción Nequi (cruce importe exacto)", ignorar_sector=True)
+                        ok, _ = clasificar_y_registrar(id40, id50, "Excepción Nequi (cruce importe exacto)", ignorar_sector=False)
                         if ok:
                             usados.update([id40, id50])
                         return True
@@ -915,7 +912,7 @@ if archivo_subido is not None:
                     
                     if len(con_tol) == 1:
                         id50 = con_tol.iloc[0]['ID_Linea']
-                        ok, _ = clasificar_y_registrar(id40, id50, "Excepción Nequi (con diferencia de valor)", ignorar_sector=True)
+                        ok, _ = clasificar_y_registrar(id40, id50, "Excepción Nequi (con diferencia de valor)", ignorar_sector=False)
                         if ok:
                             usados.update([id40, id50])
                         return True
@@ -937,6 +934,8 @@ if archivo_subido is not None:
                     if id40 in usados: continue
                     candidatos_50 = df_50[
                         (df_50[col_banco] == r40[col_banco]) &
+                        (df_50['Sector'] == r40['Sector']) &
+                        (df_50['Es_Nequi'] == True) &
                         (~df_50['ID_Linea'].isin(usados))
                     ].copy()
                     if candidatos_50.empty: continue
@@ -953,6 +952,8 @@ if archivo_subido is not None:
                     if id40 in usados: continue
                     candidatos_50 = df_50[
                         (df_50[col_banco] == r40[col_banco]) &
+                        (df_50['Sector'] == r40['Sector']) &
+                        (df_50['Es_Nequi'] == True) &
                         (~df_50['ID_Linea'].isin(usados))
                     ].copy()
                     if candidatos_50.empty: continue
@@ -975,7 +976,7 @@ if archivo_subido is not None:
                     for _, linea in grupo.iterrows():
                         idl = linea['ID_Linea']
                         if idl in usados: continue
-                        candidatos = df_50[(df_50[col_banco] == linea[col_banco]) & (~df_50['ID_Linea'].isin(usados))].copy()
+                        candidatos = df_50[(df_50[col_banco] == linea[col_banco]) & (df_50['Sector'] == linea['Sector']) & (~df_50['ID_Linea'].isin(usados))].copy()
                         if candidatos.empty: continue
 
                         candidatos['_dif_dias'] = (candidatos['Fecha_F'] - linea['Fecha_F']).dt.days.abs().fillna(999)
@@ -1039,14 +1040,14 @@ if archivo_subido is not None:
                 pendientes_40b = df[(df['ID_Linea'].isin(df_40['ID_Linea'])) & (~df['ID_Linea'].isin(usados))]
                 pendientes_50b = df[(df['ID_Linea'].isin(df_50['ID_Linea'])) & (~df['ID_Linea'].isin(usados))]
 
-                for (fecha_z, importe_z), grupo40 in pendientes_40b.groupby([col_F, 'Abs_I']):
+                for (fecha_z, sector_z, importe_z), grupo40 in pendientes_40b.groupby([col_F, 'Sector', 'Abs_I']):
                     if importe_z > 0 and importe_z % multiplo_redondo == 0:
                         continue
                     grupo40 = grupo40[~grupo40['ID_Linea'].isin(usados)]
                     if grupo40.empty:
                         continue
                     grupo50 = pendientes_50b[
-                        (pendientes_50b[col_F] == fecha_z) & (pendientes_50b['Abs_I'] == importe_z) &
+                        (pendientes_50b[col_F] == fecha_z) & (pendientes_50b['Sector'] == sector_z) & (pendientes_50b['Abs_I'] == importe_z) &
                         (~pendientes_50b['ID_Linea'].isin(usados))
                     ]
                     if grupo50.empty:
@@ -1126,7 +1127,7 @@ if archivo_subido is not None:
                     p50 = df[(df[col_G] == '50') & (~df['Es_CB_G50']) & (~df['ID_Linea'].isin(usados))]
                     for id40, f40 in p40.iterrows():
                         if id40 in usados: continue
-                        cand = p50[(p50[col_banco] == f40[col_banco]) & (p50['Abs_I'] == f40['Abs_I']) & (~p50['ID_Linea'].isin(usados))].copy()
+                        cand = p50[(p50[col_banco] == f40[col_banco]) & (p50['Sector'] == f40['Sector']) & (p50['Abs_I'] == f40['Abs_I']) & (~p50['ID_Linea'].isin(usados))].copy()
                         if cand.empty: continue
                         cand = cand[cand[col_H].apply(lambda h: referencias_se_contienen(f40[col_A], h))]
                         if not cand.empty:
@@ -1179,9 +1180,9 @@ if archivo_subido is not None:
 
                     p40_h = df[(df[col_G] == '40') & (~df['Es_IP_G40']) & (~df['ID_Linea'].isin(usados))]
                     p50_h = df[(df[col_G] == '50') & (~df['Es_CB_G50']) & (~df['ID_Linea'].isin(usados))]
-                    for imp, g40 in p40_h.groupby('Abs_I'):
+                    for (sector_imp, imp), g40 in p40_h.groupby(['Sector', 'Abs_I']):
                         if imp > 0 and imp % multiplo_redondo == 0: continue
-                        g50 = p50_h[p50_h['Abs_I'] == imp]
+                        g50 = p50_h[(p50_h['Sector'] == sector_imp) & (p50_h['Abs_I'] == imp)]
                         if len(g40) == 1 and len(g50) == 1:
                             id40, id50 = g40.iloc[0]['ID_Linea'], g50.iloc[0]['ID_Linea']
                             dias_lejos = abs((g40.iloc[0]['Fecha_F'] - g50.iloc[0]['Fecha_F']).days)
