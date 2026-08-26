@@ -1,9 +1,7 @@
 # app_conciliacion_v40_hibrida_corregida_final.py
 #
-# FIX 1: Bloqueo de 4 dígitos eliminado (Permite cruzar Refs cortas).
-# FIX 2: Textos gerenciales ultra-cortos. 
-# FIX 3: Nueva Agrupación IP (Mezcla y suma) por Fecha y Sector como Plan B.
-# FIX 4: Diferencia de Fecha de 1 día pasa a Morado. > 1 día pasa a Salmón.
+# FIX 1: Bloqueo de 4 dígitos eliminado (Permite cruzar Refs cortas como "3278" en multiposiciones).
+# FIX 2: Textos gerenciales ultra-cortos. Adiós a las explicaciones de reglas (ej. "Regla 6B").
 
 import streamlit as st
 import pandas as pd
@@ -31,11 +29,11 @@ st.caption(
 
 with st.expander("⚙️ Parámetros de tolerancia"):
     TOPE_DIAS_ALERTA = st.slider(
-        "Días máximos permitidos para cruzar con desfase de fecha (1 día = Morado, 2+ días = Salmón).",
-        1, 10, 4
+        "Días máximos de diferencia de fecha F para alerta (Regla 7, tope fijo 4)",
+        1, 4, 4
     )
     tol_valor_purpura = st.number_input(
-        "Diferencia máxima de valor ($) para alerta MORADA",
+        "Diferencia máxima de valor ($) para alerta MORADA (Regla morado, tope 500)",
         min_value=1, value=500, step=50, max_value=500
     )
     tol_valor_abs_general = st.number_input(
@@ -60,13 +58,13 @@ with st.expander("⚙️ Parámetros de tolerancia"):
         help="Ejecuta una segunda pasada profunda (T1 a T6) y genera una pestaña ordenada de menor a mayor."
     )
 
-COLOR_AZUL = "#C5D9F1"      # Conciliado perfecto
-COLOR_VERDE = "#A9D18E"     # DZ multiposición sin conciliar
-COLOR_SALMON = "#F5B7A1"    # Diferencia de fecha > 1 día
-COLOR_MORADO = "#C39BD3"    # Diferencia de valor O fecha de exactamente 1 día
-COLOR_DURAZNO = "#FAD7A0"   # Reclasificación de banco
+COLOR_AZUL = "#C5D9F1"      # Conciliado (todas las reglas cumplen)
+COLOR_VERDE = "#A9D18E"     # EXCLUSIVO: DZ multiposición sin conciliar
+COLOR_SALMON = "#F5B7A1"    # Diferencia de fecha (hasta 4 días) - Regla 7
+COLOR_MORADO = "#C39BD3"    # Diferencia de valor máx $500 - Regla morado
+COLOR_DURAZNO = "#FAD7A0"   # Reclasificación de banco - Regla 6
 COLOR_BLANCO = "#FFFFFF"    # Pendiente / Sugerencias estándar
-COLOR_GRIS = "#D0CECE"      # Cruces IP/CB (Regla 3 estricta o mezcla por fecha/sector)
+COLOR_GRIS = "#D0CECE"      # Cruces múltiples de documento IP (Regla 3)
 COLOR_AMARILLO = "#FFF2CC"  # Sugerencias del Modo Tarde
 
 archivo_subido = st.file_uploader("Selecciona el archivo de Excel o CSV", type=['xlsx', 'csv'])
@@ -261,7 +259,7 @@ if archivo_subido is not None:
                     return None
 
                 # =====================================================
-                # DETECCIÓN NEQUI
+                # DETECCIÓN NEQUI DIFUSA Y ESTRICTA AISLADA
                 # =====================================================
                 def _similitud(palabra, objetivo='NEQUI'):
                     return SequenceMatcher(None, palabra, objetivo).ratio()
@@ -311,6 +309,7 @@ if archivo_subido is not None:
                 def referencias_se_contienen(valor_a, valor_h):
                     a = solo_digitos(valor_a)
                     h = solo_digitos(valor_h)
+                    # FIX 1: Removido el chequeo de 4-dígitos para permitir referencias cortas válidas.
                     return bool(a and h and (a in h or h in a))
 
                 df['Es_Nequi'] = df.apply(lambda r: es_nequi_flexible(r, umbral_fuzzy_nequi), axis=1)
@@ -380,16 +379,12 @@ if archivo_subido is not None:
                         return False
 
                     texto = f'{formato_linea(id40)} | {formato_linea(id50)}'
-                    
                     if dias == 0:
                         estado = 'Conciliado'
                         msg = 'Cruce exacto.'
-                    elif dias <= 1:
+                    else:
                         estado = 'Diferencia de fecha'
                         msg = f'Diferencia de fecha: {dias} día(s).'
-                    else:
-                        estado = 'Diferencia de fecha extensa'
-                        msg = f'Diferencia de fecha extensa: {dias} día(s).'
 
                     for idx in [id40, id50]:
                         df.loc[df['ID_Linea'] == idx, 'Estado_Conciliacion'] = estado
@@ -425,7 +420,7 @@ if archivo_subido is not None:
                     resultado['dif_dias'] = dif_dias
 
                     if dif_dias > TOPE_DIAS_ALERTA:
-                        resultado['motivo'] = "Excede límite de días permitidos"
+                        resultado['motivo'] = f"Excede límite de días permitidos"
                         return resultado
 
                     def limpiar_nombre_banco(nombre_banco):
@@ -482,6 +477,7 @@ if archivo_subido is not None:
                     resultado['motivo'] = "OK"
                     return resultado
 
+                # FIX 2: Textos cortitos y ejecutivos.
                 def clasificar_y_registrar(id40, id50, ignorar_sector=False):
                     res = gate_seguridad(id40, id50, exigir_importe_exacto=True, tolerancia_valor=tol_valor_purpura, ignorar_sector=ignorar_sector)
                     if not res['ok']:
@@ -490,38 +486,30 @@ if archivo_subido is not None:
                     texto_candidatos = f"{formato_linea(id40)} | {formato_linea(id50)}"
                     comentario_40 = []
                     comentario_50 = []
-                    
-                    dias = res['dif_dias']
+                    estado_final = 'Conciliado'
+
                     if res['es_ip']:
-                        if dias > 1:
-                            estado_final = 'Diferencia de fecha extensa'
-                            msg = f"Diferencia de fecha extensa: {dias} día(s)."
-                        elif dias == 1:
+                        if res['dif_dias'] and res['dif_dias'] > 0:
                             estado_final = 'Diferencia de fecha'
-                            msg = f"Diferencia de fecha: {dias} día(s)."
+                            msg = f"Diferencia de fecha: {res['dif_dias']} día(s)."
+                            comentario_40.append(msg)
+                            comentario_50.append(msg)
                         elif res['dif_valor'] and res['dif_valor'] > 0:
                             estado_final = 'Diferencia de valor'
                             msg = f"Diferencia de valor: ${res['dif_valor']:,.0f}."
-                        else:
-                            estado_final = 'Cruce Múltiple IP/CB'
-                            msg = "Cruce exacto (POS)."
-                            
-                        if msg:
                             comentario_40.append(msg)
                             comentario_50.append(msg)
-
+                        else:
+                            estado_final = 'Conciliado'
+                            comentario_40.append("Cruce exacto (POS).")
+                            comentario_50.append("Cruce exacto (POS).")
                     elif not res['mismo_banco']:
                         estado_final = 'Reclasificacion de Banco'
                         comentario_40.append(f"Registrado en '{res['banco_a']}'; debe ser '{res['banco_b']}'.")
                         comentario_50.append(f"Registrado en '{res['banco_b']}'; debe ser '{res['banco_a']}'.")
-                    elif dias > 1:
-                        estado_final = 'Diferencia de fecha extensa'
-                        msg = f"Diferencia de fecha extensa: {dias} día(s)."
-                        comentario_40.append(msg)
-                        comentario_50.append(msg)
-                    elif dias == 1:
+                    elif res['dif_dias'] and res['dif_dias'] > 0:
                         estado_final = 'Diferencia de fecha'
-                        msg = f"Diferencia de fecha: {dias} día(s)."
+                        msg = f"Diferencia de fecha: {res['dif_dias']} día(s)."
                         comentario_40.append(msg)
                         comentario_50.append(msg)
                     elif res['dif_valor'] and res['dif_valor'] > 0:
@@ -551,7 +539,7 @@ if archivo_subido is not None:
                     return True, estado_final
 
                 # =====================================================
-                # Regla 3a: IP Homologados Agrupado ESTRICTO BD
+                # Regla 3: IP Homologados Agrupado ESTRICTO BD
                 # =====================================================
                 ind_ip_exacto = set()
                 ind_ip_tolerancia = set()
@@ -582,13 +570,13 @@ if archivo_subido is not None:
                             usados.update(ip_ids + cb_ids)
                             texto_cand = " | ".join(formato_linea(i) for i in ip_ids + cb_ids)
                             if es_exacto:
-                                estado = 'Cruce Múltiple IP/CB'
+                                estado = 'Conciliado'
                                 ind_ip_exacto.update(ip_ids + cb_ids)
-                                txt = "Cruce exacto homologado (POS)."
+                                txt = f"Cruce exacto (POS). Ref: {rh}."
                             else:
                                 estado = 'Diferencia de valor'
                                 ind_ip_tolerancia.update(ip_ids + cb_ids)
-                                txt = f"Diferencia de valor (${fila['DifV']:,.0f}) (POS)."
+                                txt = f"Diferencia de valor (${fila['DifV']:,.0f}). Ref: {rh}."
                             for idx in ip_ids + cb_ids:
                                 df.loc[df['ID_Linea'] == idx, 'Estado_Conciliacion'] = estado
                                 df.loc[df['ID_Linea'] == idx, 'Candidatos_Conciliacion'] = texto_cand
@@ -598,51 +586,9 @@ if archivo_subido is not None:
                         for _, fila in con_tol.iterrows(): procesar_grupo_ip(fila, es_exacto=False)
 
                 # ================================================================
-                # Regla 3b: MEZCLA Y SUMA IP (Por Fecha y Sector) Plan B
+                # RESTRICCIÓN ESTRICTA IP: Si no homologó arriba, queda bloqueado
                 # ================================================================
                 if usar_ipcb:
-                    df_ip_pend = df[(df[col_C].astype(str).str.upper() == 'IP') & (df[col_G] == '40') & (~df['ID_Linea'].isin(usados))]
-                    df_cb_pend = df[(df[col_C].astype(str).str.upper() == 'CB') & (df[col_G] == '50') & (~df['ID_Linea'].isin(usados))]
-
-                    if not df_ip_pend.empty and not df_cb_pend.empty:
-                        grp_ip2 = df_ip_pend.groupby([col_banco, 'Sector', 'Fecha_F'])['Abs_I'].sum().reset_index(name='S_IP')
-                        grp_cb2 = df_cb_pend.groupby([col_banco, 'Sector', 'Fecha_F'])['Abs_I'].sum().reset_index(name='S_CB')
-                        m2 = pd.merge(grp_cb2, grp_ip2, on=[col_banco, 'Sector', 'Fecha_F'])
-                        m2['DifV'] = (m2['S_CB'] - m2['S_IP']).abs()
-                        max_s2 = m2[['S_CB', 'S_IP']].max(axis=1).clip(lower=1)
-                        m2['Pct'] = m2['DifV'] / max_s2
-
-                        exactos2 = m2[m2['DifV'].round(2) == 0]
-                        con_tol2 = m2[(m2['DifV'] > 0) & ((m2['DifV'] <= tol_valor_abs_general) | (m2['Pct'] <= tol_valor_pct_general))]
-
-                        def procesar_grupo_ip_fallback(fila, es_exacto):
-                            b, s, f = fila[col_banco], fila['Sector'], fila['Fecha_F']
-                            sub_ip = df_ip_pend[(df_ip_pend[col_banco] == b) & (df_ip_pend['Sector'] == s) & (df_ip_pend['Fecha_F'] == f)]
-                            sub_cb = df_cb_pend[(df_cb_pend[col_banco] == b) & (df_cb_pend['Sector'] == s) & (df_cb_pend['Fecha_F'] == f)]
-                            
-                            ip_ids = [i for i in sub_ip['ID_Linea'].tolist() if i not in usados]
-                            cb_ids = [i for i in sub_cb['ID_Linea'].tolist() if i not in usados]
-                            if not ip_ids or not cb_ids: return
-                            
-                            usados.update(ip_ids + cb_ids)
-                            texto_cand = " | ".join(formato_linea(i) for i in ip_ids + cb_ids)
-                            
-                            if es_exacto:
-                                estado = 'Sugerencia - Cruce IP por fecha y sector'
-                                txt = "Sugerencia POS: Cuadre perfecto por misma Fecha y Sector."
-                            else:
-                                estado = 'Diferencia de valor'
-                                txt = f"Sugerencia POS: Diferencia de valor (${fila['DifV']:,.0f}) por Fecha y Sector."
-                                
-                            for idx in ip_ids + cb_ids:
-                                df.loc[df['ID_Linea'] == idx, 'Estado_Conciliacion'] = estado
-                                df.loc[df['ID_Linea'] == idx, 'Candidatos_Conciliacion'] = texto_cand
-                                df.loc[df['ID_Linea'] == idx, 'Comentario'] = txt
-
-                        for _, fila in exactos2.iterrows(): procesar_grupo_ip_fallback(fila, es_exacto=True)
-                        for _, fila in con_tol2.iterrows(): procesar_grupo_ip_fallback(fila, es_exacto=False)
-
-                    # Los IP que sobren aquí quedarán pendientes
                     ip_sin_resolver = df[(df[col_C].astype(str).str.upper() == 'IP') & (df[col_G] == '40') & (~df['ID_Linea'].isin(usados))]
                     for idl in ip_sin_resolver['ID_Linea']:
                         escribir_comentario(idl, "Falta Referencia POS.", append=False)
@@ -650,6 +596,9 @@ if archivo_subido is not None:
                 # =====================================================
                 # Regla 8: NEQUI POR TOTALES Y FIFO
                 # =====================================================
+                ind_nequi8_azul = set()
+                ind_nequi8_sugerencia = set()
+
                 df_nequi_dz = df[(df[col_G] == '40') & (df['Es_Nequi'] == True) & (~df['ID_Linea'].isin(usados))]
                 df_cb_disponible = df[(df[col_G] == '50') & (df['Es_Nequi'] == True) & (~df['ID_Linea'].isin(usados))]
                 
@@ -683,18 +632,19 @@ if archivo_subido is not None:
                                     df.loc[df['ID_Linea'] == idx, 'Estado_Conciliacion'] = 'Conciliado'
                                     df.loc[df['ID_Linea'] == idx, 'Candidatos_Conciliacion'] = texto_cand
                                     df.loc[df['ID_Linea'] == idx, 'Comentario'] = "Cruce Nequi por totales."
-                                usados.update([id40, id50])
+                                ind_nequi8_azul.update([id40, id50])
                                 parejas_registradas.append((id40, id50))
                             usados.update(dz_ord['ID_Linea'].tolist() + cb_ord['ID_Linea'].tolist())
                         else:
                             docs_dz, docs_cb = resumen_docs(dz_ord), resumen_docs(cb_ord)
-                            texto_cand = f"Grupo NEQUI: DZ: {docs_dz} || CB: {docs_cb}"
+                            texto_cand = f"Grupo NEQUI: DZ candidatos: {docs_dz} || CB candidatos: {docs_cb}"
                             for _, fila in pd.concat([dz_ord, cb_ord]).iterrows():
                                 idl = fila['ID_Linea']
                                 escribir_estado([idl], 'Pendiente o solicitar soporte', forzar=False)
                                 if df.loc[df['ID_Linea'] == idl, 'Candidatos_Conciliacion'].iloc[0] == '':
                                     escribir_candidatos(idl, texto_cand)
-                                escribir_comentario(idl, "Totales Nequi no cuadran.", append=False)
+                                escribir_comentario(idl, "Totales Nequi no cuadran. Revisión manual.", append=False)
+                                ind_nequi8_sugerencia.add(idl)
 
                 # =====================================================
                 # Regla 1 — A debe coincidir con H (exacto)
@@ -894,7 +844,7 @@ if archivo_subido is not None:
                             docs_txt = resumen_docs(exactos)
                             df.loc[df['ID_Linea'] == id40, 'Estado_Conciliacion'] = 'Pendiente o solicitar soporte'
                             df.loc[df['ID_Linea'] == id40, 'Candidatos_Conciliacion'] = f"{formato_linea(id40)} | Candidatos posibles: {docs_txt}"
-                            df.loc[df['ID_Linea'] == id40, 'Comentario'] = "Ambigüedad Nequi."
+                            df.loc[df['ID_Linea'] == id40, 'Comentario'] = "Ambigüedad Nequi. Revisión manual."
                             return True
 
                     r40 = df.loc[df['ID_Linea'] == id40].iloc[0]
@@ -911,7 +861,7 @@ if archivo_subido is not None:
                         docs_txt = resumen_docs(con_tol)
                         df.loc[df['ID_Linea'] == id40, 'Estado_Conciliacion'] = 'Pendiente o solicitar soporte'
                         df.loc[df['ID_Linea'] == id40, 'Candidatos_Conciliacion'] = f"{formato_linea(id40)} | Candidatos posibles: {docs_txt}"
-                        df.loc[df['ID_Linea'] == id40, 'Comentario'] = "Ambigüedad Nequi (tolerancia)."
+                        df.loc[df['ID_Linea'] == id40, 'Comentario'] = "Ambigüedad Nequi (tolerancia). Revisión manual."
                         return True
                         
                     return False
@@ -965,6 +915,7 @@ if archivo_subido is not None:
                     if candidatos_50.empty: continue
 
                     candidatos_50['_dif_dias'] = (candidatos_50['Fecha_F'] - r40['Fecha_F']).dt.days.abs().fillna(999)
+                    candidatos_50 = candidatos_50[candidatos_50['_dif_dias'] <= TOPE_DIAS_ALERTA]
                     candidatos_50 = candidatos_50.sort_values('_dif_dias')
                     if candidatos_50.empty: continue
 
@@ -1104,7 +1055,7 @@ if archivo_subido is not None:
                             df.loc[df['ID_Linea'] == r['ID_Linea'], 'Comentario'] = "Múltiples candidatos para reclasificación."
 
                 # ================================================================
-                # VALIDACION FINAL DE FECHA (Sin bloqueo de blancos)
+                # VALIDACION FINAL DE FECHA (Muro de Contencion)
                 # ================================================================
                 for id40, id50 in parejas_registradas:
                     estado40 = str(df.loc[df['ID_Linea'] == id40, 'Estado_Conciliacion'].iloc[0])
@@ -1113,10 +1064,11 @@ if archivo_subido is not None:
                     if es_flex: continue
 
                     dias = diferencia_dias_fila(id40, id50)
-                    if dias is not None and dias > TOPE_DIAS_ALERTA:
+                    if dias is None or dias > TOPE_DIAS_ALERTA:
                         for idx in [id40, id50]:
-                            df.loc[df['ID_Linea'] == idx, 'Estado_Conciliacion'] = 'Diferencia de fecha > 4 días'
-                            df.loc[df['ID_Linea'] == idx, 'Comentario'] = f'Diferencia de fecha extensa ({dias} días).'
+                            df.loc[df['ID_Linea'] == idx, 'Estado_Conciliacion'] = 'Pendiente o solicitar soporte'
+                            df.loc[df['ID_Linea'] == idx, 'Comentario'] = f'Excede límite de días permitidos ({dias} días).'
+                            df.loc[df['ID_Linea'] == idx, 'Candidatos_Conciliacion'] = ''
 
                 # =====================================================
                 # MODO TARDE (SEGUNDA PASADA PROFUNDA T1 - T6)
@@ -1147,14 +1099,8 @@ if archivo_subido is not None:
                         for id40, id50 in zip(g40['ID_Linea'], g50['ID_Linea']):
                             if id40 in usados or id50 in usados: continue
                             dias = diferencia_dias_fila(id40, id50)
-                            if dias is not None:
-                                if dias == 0:
-                                    est = 'Conciliado'
-                                elif dias <= 1:
-                                    est = 'Diferencia de fecha'
-                                else:
-                                    est = 'Diferencia de fecha > 4 días'
-                                    
+                            if dias is not None and dias <= TOPE_DIAS_ALERTA:
+                                est = 'Conciliado' if dias == 0 else 'Diferencia de fecha'
                                 for idx in [id40, id50]:
                                     df.loc[df['ID_Linea'] == idx, 'Estado_Conciliacion'] = est
                                     df.loc[df['ID_Linea'] == idx, 'Candidatos_Conciliacion'] = f"{formato_linea(id40)} | {formato_linea(id50)}"
@@ -1180,7 +1126,7 @@ if archivo_subido is not None:
                             for idx in [id40, id50]:
                                 df.loc[df['ID_Linea'] == idx, 'Estado_Conciliacion'] = 'Diferencia de valor'
                                 df.loc[df['ID_Linea'] == idx, 'Candidatos_Conciliacion'] = f"{formato_linea(id40)} | {formato_linea(id50)}"
-                                df.loc[df['ID_Linea'] == idx, 'Comentario'] = f"Diferencia de valor: ${dif_val:,.0f} (dif {dif_d} días)."
+                                df.loc[df['ID_Linea'] == idx, 'Comentario'] = f"Diferencia de valor: ${dif_val:,.2f} (dif {dif_d} días)."
                             usados.update([id40, id50])
 
                     p40_h = df[(df[col_G] == '40') & (~df['Es_IP_G40']) & (~df['ID_Linea'].isin(usados))]
@@ -1220,20 +1166,18 @@ if archivo_subido is not None:
                 df_final['Estado_Tecnico'] = df_final['Estado_Conciliacion']
                 df_final['Comentario_Tecnico'] = df_final['Comentario']
 
-                # Asignamos el color con la nueva lógica de fechas
+                # Asignamos el color con la misma lógica directa
                 def color_fila(row):
                     est = str(row['Estado_Conciliacion']).strip()
                     com = str(row['Comentario']).strip()
-                    
+
+                    if 'Excede límite' in com: return [f'background-color: {COLOR_BLANCO}; color: red'] * len(row)
                     if 'Múltiples posiciones sin cruzar' in com: return [f'background-color: {COLOR_VERDE}; color: black'] * len(row)
-                    if 'Sugerencia POS' in com or 'Cruce exacto homologado (POS)' in com: 
-                        return [f'background-color: {COLOR_GRIS}; color: black'] * len(row)
-                        
-                    if est == 'Diferencia de fecha > 4 días' or 'extensa' in com: return [f'background-color: {COLOR_SALMON}; color: black'] * len(row)
+                    if 'Cruce exacto (POS)' in com: return [f'background-color: {COLOR_GRIS}; color: black'] * len(row)
                     if est == 'Conciliado': return [f'background-color: {COLOR_AZUL}; color: black'] * len(row)
                     if est == 'Reclasificacion de Banco': return [f'background-color: {COLOR_DURAZNO}; color: black'] * len(row)
-                    
-                    if est == 'Diferencia de fecha' or est == 'Diferencia de valor': return [f'background-color: {COLOR_MORADO}; color: black'] * len(row)
+                    if est == 'Diferencia de fecha': return [f'background-color: {COLOR_SALMON}; color: black'] * len(row)
+                    if est == 'Diferencia de valor': return [f'background-color: {COLOR_MORADO}; color: black'] * len(row)
                     if 'forzado' in com or 'Tarde' in com: return [f'background-color: {COLOR_AMARILLO}; color: black'] * len(row)
                     
                     return [f'background-color: {COLOR_BLANCO}; color: black'] * len(row)
@@ -1296,17 +1240,13 @@ if archivo_subido is not None:
                     
                     total_azul = int((df_final['Estado_Conciliacion'] == 'Conciliado').sum())
                     total_durazno = int((df_final['Estado_Conciliacion'] == 'Reclasificacion de Banco').sum())
-                    
-                    mask_salmon_color = df_final['Estado_Conciliacion'].str.contains('> 4 días', na=False)
-                    total_salmon = int(mask_salmon_color.sum())
-                    
-                    mask_morado_color = df_final['Estado_Conciliacion'].isin(['Diferencia de fecha', 'Diferencia de valor'])
-                    total_morado = int(mask_morado_color.sum())
+                    total_salmon = int((df_final['Estado_Conciliacion'] == 'Diferencia de fecha').sum())
+                    total_morado = int((df_final['Estado_Conciliacion'] == 'Diferencia de valor').sum())
                     
                     mask_verde = (df_final[col_G] == '40') & df_final['Comentario'].str.contains('Múltiples posiciones sin cruzar', na=False)
                     total_verde = int(mask_verde.sum())
                     
-                    mask_gris = df_final['Comentario'].str.contains('POS', na=False)
+                    mask_gris = df_final['Comentario'].str.contains('Cruce exacto \(POS\)', na=False)
                     total_gris = int(mask_gris.sum())
                     
                     total_pendiente = int(df_final['Estado_Conciliacion'].str.contains('Pendiente', na=False).sum())
@@ -1314,18 +1254,18 @@ if archivo_subido is not None:
                     resumen = pd.DataFrame({
                         "Métrica": [
                             "Fecha de procesamiento", "Total filas procesadas",
-                            "Azul - Conciliados Exactos",
-                            "Gris - Cruces IP/CB (POS o Suma sugerida)",
+                            "Azul - Conciliados",
+                            "Gris - Cruce exacto POS",
                             "Verde - Documentos DZ multiposición sin conciliar",
-                            "Morado - Diferencia de valor O fecha de 1 día",
-                            "Salmón - Diferencia de fecha (> 1 día)",
+                            "Salmón - Diferencia de fecha",
+                            "Morado - Diferencia de valor",
                             "Durazno - Reclasificación de banco",
-                            "Blanco - Pendientes / Otras Sugerencias",
+                            "Blanco - Pendientes / Sugerencias",
                             "Filas excluidas (sin doc/clave)"
                         ],
                         "Valor": [
                             datetime.now().strftime('%d/%m/%Y %H:%M'), total_filas,
-                            total_azul, total_gris, total_verde, total_morado, total_salmon, total_durazno,
+                            total_azul, total_gris, total_verde, total_salmon, total_morado, total_durazno,
                             total_pendiente, filas_excluidas
                         ]
                     })
@@ -1333,7 +1273,7 @@ if archivo_subido is not None:
                     pestanas_usadas.add('RESUMEN')
 
                     df_nov = df_final[df_final[col_G] == '40'].copy()
-                    mask_alerta = df_nov['Estado_Conciliacion'].isin(['Diferencia de fecha', 'Diferencia de fecha > 4 días', 'Diferencia de valor', 'Reclasificacion de Banco', 'Pendiente o solicitar soporte'])
+                    mask_alerta = df_nov['Estado_Conciliacion'].isin(['Diferencia de fecha', 'Diferencia de valor', 'Reclasificacion de Banco', 'Pendiente o solicitar soporte'])
                     
                     df_nov = df_nov[mask_alerta]
                     if not df_nov.empty:
@@ -1370,9 +1310,9 @@ if archivo_subido is not None:
 
                 c1, c2, c3, c4, c5, c6 = st.columns(6)
                 c1.metric("Azul", total_azul)
-                c2.metric("Gris", total_gris)
-                c3.metric("Morado", total_morado)
-                c4.metric("Salmón", total_salmon)
+                c2.metric("Verde", total_verde)
+                c3.metric("Salmón", total_salmon)
+                c4.metric("Morado", total_morado)
                 c5.metric("Durazno", total_durazno)
                 c6.metric("Pendiente", total_pendiente)
 
