@@ -4,8 +4,10 @@
 # - Comentarios Ejecutivos Conservados (v40)
 # - Sectorización Flexible (v35)
 # - Nequi Difuso (v35)
-# FIX: Sectorización respetada estrictamente dentro de Nequi y exigencia real
+# FIX 1: Sectorización respetada estrictamente dentro de Nequi y exigencia real
 # de rangos Nequi en documentos clave 50.
+# FIX 2: Corrección en clasificar_sector para NO buscar códigos numéricos de zona
+# en los textos (evita clasificar falsamente "Dist Acopi" por IDs de oficinas).
 
 import streamlit as st
 import pandas as pd
@@ -103,7 +105,7 @@ if archivo_subido is not None:
                 col_H = 'Referencia'
                 col_I = 'Importe en moneda local' if 'Importe en moneda local' in df.columns else 'Importe en ML'
                 col_K = 'Texto' if 'Texto' in df.columns else None
-                col_novedad = 'novedad' if 'novedad' in df.columns else ('Novedad' if 'Novedad' in df.columns else None)
+                col_novedad = 'Doc.compensación' if 'Doc.compensación' in df.columns else ('Novedad' if 'Novedad' in df.columns else None)
                 col_banco = 'Clave referencia 3'
 
                 if not col_A:
@@ -229,7 +231,6 @@ if archivo_subido is not None:
                 def clasificar_sector(row):
                     texto_k = str(row.get(col_K, "")) if col_K else ""
                     texto_nov = str(row.get(col_novedad, "")) if col_novedad else ""
-                    texto_a = str(row.get(col_A, ""))
                     h_val = str(row.get(col_H, "")).strip()
                     h_val = re.sub(r'\.0$', '', h_val)
 
@@ -239,6 +240,8 @@ if archivo_subido is not None:
                     if 'D504' in t: return 'Dist Dosquebradas'
                     if 'D505' in t: return 'Dist Pasto'
 
+                    # FIX 2: La regla indica evaluar RANGO DE REFERENCIA CLM H
+                    # NO buscar cuatro dígitos aleatorios en los textos de otras columnas
                     if h_val.isdigit():
                         num = int(h_val)
                         if 2000 <= num <= 2999: return 'Dist Buga'
@@ -247,15 +250,6 @@ if archivo_subido is not None:
                         if 6000 <= num <= 6999: return 'Dist Pasto'
 
                     if h_val in mapeo_referencias_dist: return mapeo_referencias_dist[h_val]
-
-                    t_full = f"{texto_k} {texto_nov} {texto_a} {h_val}".upper()
-                    nums = re.findall(r' \d{4} ', t_full)
-                    for n in nums:
-                        num = int(n)
-                        if 2000 <= num <= 2999: return 'Dist Buga'
-                        if 3000 <= num <= 3999: return 'Dist Acopi'
-                        if 4000 <= num <= 4999: return 'Dist Dosquebradas'
-                        if 6000 <= num <= 6999: return 'Dist Pasto'
 
                     return 'Sin clasificar'
 
@@ -618,15 +612,12 @@ if archivo_subido is not None:
                 ind_nequi8_sugerencia = set()
 
                 df_nequi_dz = df[(df[col_G] == '40') & (df['Es_Nequi'] == True) & (~df['ID_Linea'].isin(usados))]
-                
-                # FIX 1: Filtrar también los Créditos 50 exigiendo que sean Es_Nequi == True
                 df_cb_disponible = df[(df[col_G] == '50') & (df['Es_Nequi'] == True) & (~df['ID_Linea'].isin(usados))]
                 
                 if usar_ipcb:
                     df_cb_disponible = df_cb_disponible[df_cb_disponible[col_C].astype(str).str.upper() != 'IP']
 
                 if not df_nequi_dz.empty and not df_cb_disponible.empty:
-                    # FIX 2: Agrupamos por Sector para que no se mezclen ciudades
                     for (banco_g, sector_g, fecha_g), grupo_dz in df_nequi_dz.groupby([col_banco, 'Sector', 'Fecha_F']):
                         grupo_dz = grupo_dz[~grupo_dz['ID_Linea'].isin(usados)]
                         if grupo_dz.empty: continue
@@ -843,7 +834,6 @@ if archivo_subido is not None:
                     r40 = df.loc[df['ID_Linea'] == id40].iloc[0]
                     importe_r = r40['Abs_I']
 
-                    # Los candidatos_50 ya vienen filtrados por banco, sector y Es_Nequi
                     grupo_cb = candidatos_50[
                         (candidatos_50['Abs_I'] == importe_r) &
                         (~candidatos_50['ID_Linea'].isin(usados))
@@ -852,7 +842,6 @@ if archivo_subido is not None:
                     if grupo_cb.empty:
                         return False
 
-                    # Tomar todas las líneas 40 (Nequi) pendientes con este mismo importe, banco y sector
                     banco_r = r40[col_banco]
                     fecha_r = r40['Fecha_F']
                     sector_r = r40['Sector']
@@ -889,7 +878,6 @@ if archivo_subido is not None:
                         if id_dz in usados or id_cb in usados:
                             continue
                         
-                        # FIX: ignorar_sector=False para mantener la integridad
                         ok, _ = clasificar_y_registrar(
                             id_dz, id_cb,
                             f"{comentario_base} (FIFO desambiguado: emparejado {n_pares} de {max(n_dz, n_cb)} candidatos disponibles, mismo importe ${importe_r:,.0f})",
@@ -904,7 +892,6 @@ if archivo_subido is not None:
                     exactos = candidatos_50[candidatos_50['Abs_I'] == df.loc[df['ID_Linea'] == id40, 'Abs_I'].iloc[0]]
                     if len(exactos) == 1:
                         id50 = exactos.iloc[0]['ID_Linea']
-                        # FIX: ignorar_sector=False
                         ok, _ = clasificar_y_registrar(id40, id50, "Excepción Nequi (cruce importe exacto)", ignorar_sector=False)
                         if ok:
                             usados.update([id40, id50])
@@ -933,7 +920,6 @@ if archivo_subido is not None:
                     
                     if len(con_tol) == 1:
                         id50 = con_tol.iloc[0]['ID_Linea']
-                        # FIX: ignorar_sector=False
                         ok, _ = clasificar_y_registrar(id40, id50, "Excepción Nequi (con diferencia de valor)", ignorar_sector=False)
                         if ok:
                             usados.update([id40, id50])
@@ -954,7 +940,6 @@ if archivo_subido is not None:
                     id40 = r40['ID_Linea']
                     if id40 in usados: continue
                     
-                    # FIX: Exigir Es_Nequi==True en Créditos y pre-filtrar el Sector
                     sec = r40['Sector']
                     if sec in ('', 'Sin clasificar'):
                         candidatos_50 = df_50[
@@ -1518,7 +1503,8 @@ if archivo_subido is not None:
 - <span style="background-color:{COLOR_BLANCO}; padding:2px 8px; border:1px solid #ccc;">Blanco: Pendientes / Otras Sugerencias / Bloqueos por cruces fuera del límite de días</span>
 
 **Novedades Híbridas (Fugas selladas):**
-- **Nequi Estricto para Créditos (50):** Se corrigió la fuga que permitía a cualquier crédito emparejarse como Nequi. Ahora, el cruce exige obligatoriamente que la Referencia (H) esté en los rangos (100.000-9.999.999) y jamás tomará la "T" de la Asignación como excusa.
+- **Clasificación fiel a la Regla 2:** Los rangos (2000 a 6999) **solo** se buscan en la columna Referencia (H). Ya no se contamina la clasificación si hay números aleatorios de oficina dentro del texto.
+- **Nequi Estricto para Créditos (50):** Exige obligatoriamente que la Referencia (H) esté en los rangos (100.000-9.999.999).
 - **Sectorización Restablecida:** El bloque de "Excepción Nequi" ahora respeta la restricción de sector. Jamás mezclará movimientos de Dosquebradas con Acopi en su intento por desambiguar.
 ''', unsafe_allow_html=True)
 
