@@ -1,13 +1,13 @@
-# app_conciliacion_v40_hibrida_corregida.py
+# app_conciliacion_v40_hibrida_corregida_final.py
 #
-# VERSION INTEGRAL v40 (HÍBRIDA CORREGIDA)
+# VERSION INTEGRAL v40 (HÍBRIDA CORREGIDA FINAL)
 # - Comentarios Ejecutivos Conservados (v40)
 # - Sectorización Flexible (v35)
 # - Nequi Difuso (v35)
-# FIX 1: Sectorización respetada estrictamente dentro de Nequi y exigencia real
-# de rangos Nequi en documentos clave 50.
+# FIX 1: Sectorización respetada estrictamente dentro de Nequi.
 # FIX 2: Corrección en clasificar_sector para NO buscar códigos numéricos de zona
-# en los textos (evita clasificar falsamente "Dist Acopi" por IDs de oficinas).
+# en los textos.
+# FIX 3: Rango Nequi ampliado a 999.999.999 para capturar referencias de 8 y 9 dígitos.
 
 import streamlit as st
 import pandas as pd
@@ -240,8 +240,8 @@ if archivo_subido is not None:
                     if 'D504' in t: return 'Dist Dosquebradas'
                     if 'D505' in t: return 'Dist Pasto'
 
-                    # FIX 2: La regla indica evaluar RANGO DE REFERENCIA CLM H
-                    # NO buscar cuatro dígitos aleatorios en los textos de otras columnas
+                    # FIX: La regla indica evaluar RANGO DE REFERENCIA CLM H
+                    # NO buscar cuatro dígitos aleatorios en los textos de otras columnas.
                     if h_val.isdigit():
                         num = int(h_val)
                         if 2000 <= num <= 2999: return 'Dist Buga'
@@ -293,7 +293,8 @@ if archivo_subido is not None:
                         h_clean = re.sub(r'\.0$', '', h_raw)
                         if h_clean.isdigit():
                             h_num = int(h_clean)
-                            if 100_000 <= h_num <= 9_999_999: return True
+                            # FIX 3: Rango ampliado a 999.999.999 para cubrir IDs de Nequi de 8 y 9 dígitos
+                            if 100_000 <= h_num <= 999_999_999: return True
                             if 1_000_000_000 <= h_num <= 1_399_999_999: return True
                         return False
 
@@ -1485,7 +1486,7 @@ if archivo_subido is not None:
                 # =====================================================
                 # INTERFAZ
                 # =====================================================
-                st.success("¡Conciliación completada con el motor de reglas CLM v40 (Híbrida Corregida)!")
+                st.success("¡Conciliación completada con el motor de reglas CLM v40 (Híbrida Corregida Final)!")
                 if not cuadre_ok:
                     st.warning("⚠️ Revisa la pestaña DESCARTADAS, el total de filas no coincide.")
                 for adv in advertencias:
@@ -1503,8 +1504,8 @@ if archivo_subido is not None:
 - <span style="background-color:{COLOR_BLANCO}; padding:2px 8px; border:1px solid #ccc;">Blanco: Pendientes / Otras Sugerencias / Bloqueos por cruces fuera del límite de días</span>
 
 **Novedades Híbridas (Fugas selladas):**
+- **Rango Nequi 50 Ampliado (NUEVO):** El límite de referencia se expandió de 9 millones a 999 millones (`999.999.999`). Esto garantiza que todas las transacciones de Nequi con IDs de 8 o 9 dígitos (ej. 66997171 o 76190347) sean identificadas correctamente y logren conciliar en azul.
 - **Clasificación fiel a la Regla 2:** Los rangos (2000 a 6999) **solo** se buscan en la columna Referencia (H). Ya no se contamina la clasificación si hay números aleatorios de oficina dentro del texto.
-- **Nequi Estricto para Créditos (50):** Exige obligatoriamente que la Referencia (H) esté en los rangos (100.000-9.999.999).
 - **Sectorización Restablecida:** El bloque de "Excepción Nequi" ahora respeta la restricción de sector. Jamás mezclará movimientos de Dosquebradas con Acopi en su intento por desambiguar.
 ''', unsafe_allow_html=True)
 
@@ -1522,7 +1523,7 @@ if archivo_subido is not None:
                 st.download_button(
                     label="📥 Descargar Excel con Resultados",
                     data=output.getvalue(),
-                    file_name="Conciliacion_CLM_v40_Hibrida_Corregida.xlsx",
+                    file_name="Conciliacion_CLM_v40_Hibrida_Corregida_Final.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
 
