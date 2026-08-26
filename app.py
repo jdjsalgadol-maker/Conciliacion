@@ -1,9 +1,4 @@
 # app_conciliacion_v40_hibrida_corregida_final.py
-#
-# FIX 1: Sectorización estricta respetada en Nequi y Rangos ampliados (999.999.999).
-# FIX 2: Mezcla y suma de Puntos de Venta (IP) por Fecha y Sector -> Gris.
-# FIX 3: Diferencia de Fecha == 1 día -> Morado. 
-# FIX 4: Diferencia de Fecha > 1 día y > 4 días -> Salmón.
 
 import streamlit as st
 import pandas as pd
@@ -23,7 +18,7 @@ st.markdown('''
     </style>
 ''', unsafe_allow_html=True)
 
-st.title("🏦 Conciliación Automatizada — Motor Integral v40 (Híbrida) 🤖")
+st.title("🏦 Conciliación Automatizada 🤖")
 st.write("Sube tu archivo consolidado.")
 st.caption(
     "Selecciona opcion 'Tarde' solo despues de depurar los pendientes del primer cruce."
@@ -63,10 +58,10 @@ with st.expander("⚙️ Parámetros de tolerancia"):
 COLOR_AZUL = "#C5D9F1"      # Conciliado perfecto
 COLOR_VERDE = "#A9D18E"     # DZ multiposición sin conciliar
 COLOR_SALMON = "#F5B7A1"    # Diferencia de fecha extensa (>1 día)
-COLOR_MORADO = "#C39BD3"    # Diferencia de valor (<=500) o fecha (1 día)
+COLOR_MORADO = "#C39BD3"    # Diferencia de valor O fecha de exactamente 1 día
 COLOR_DURAZNO = "#FAD7A0"   # Reclasificación de banco
 COLOR_BLANCO = "#FFFFFF"    # Pendiente / Sugerencias estándar
-COLOR_GRIS = "#D0CECE"      # Cruces IP/CB (Regla 3 estricta o mezcla por fecha/sector)
+COLOR_GRIS = "#D0CECE"      # Cruces IP/CB (Regla 3 estricta, mezcla, o 1 a 1 con tolerancia)
 COLOR_AMARILLO = "#FFF2CC"  # Sugerencias del Modo Tarde
 
 archivo_subido = st.file_uploader("Selecciona el archivo de Excel o CSV", type=['xlsx', 'csv'])
@@ -161,13 +156,6 @@ if archivo_subido is not None:
 
                 df['Fecha_F'] = pd.to_datetime(df[col_F], errors='coerce', dayfirst=True)
                 df[col_F] = df['Fecha_F'].dt.date
-
-                if col_D:
-                    df['Fecha_D'] = pd.to_datetime(df[col_D], errors='coerce', dayfirst=True)
-                    df['Periodo_D'] = df['Fecha_D'].dt.to_period('M').astype(str)
-                    df.loc[df['Fecha_D'].isna(), 'Periodo_D'] = 'SIN_FECHA_D'
-                else:
-                    df['Periodo_D'] = 'SIN_FECHA_D'
 
                 df['Estado_Conciliacion'] = 'Pendiente'
                 df['Comentario'] = ''
@@ -368,7 +356,11 @@ if archivo_subido is not None:
                     if pd.isna(f40) or pd.isna(f50): return None
                     return abs((f40 - f50).days)
 
-                def registrar_pareja_por_fecha(id40, id50):
+                def fecha_dentro_de_4_dias(id40, id50):
+                    dias = diferencia_dias_fila(id40, id50)
+                    return dias is not None and dias <= TOPE_DIAS_ALERTA
+
+                def registrar_pareja_por_fecha(id40, id50, ignorar=None):
                     dias = diferencia_dias_fila(id40, id50)
                     texto = f'{formato_linea(id40)} | {formato_linea(id50)}'
                     
@@ -418,6 +410,10 @@ if archivo_subido is not None:
                     dif_dias = abs((fa - fb).days)
                     resultado['dif_dias'] = dif_dias
 
+                    if dif_dias > TOPE_DIAS_ALERTA:
+                        resultado['motivo'] = "Excede límite de días permitidos"
+                        return resultado
+
                     def limpiar_nombre_banco(nombre_banco):
                         nombre = str(nombre_banco).upper()
                         if 'BANCOLOMBIA' in nombre: return 'Bancolombia'
@@ -438,10 +434,8 @@ if archivo_subido is not None:
                     resultado['banco_a'] = limpiar_nombre_banco(banco_a_crudo)
                     resultado['banco_b'] = limpiar_nombre_banco(banco_b_crudo)
 
-                    if es_ip:
-                        resultado['mismo_banco'] = True
-                    else:
-                        resultado['mismo_banco'] = (banco_a_crudo == banco_b_crudo)
+                    # FIX: Evaluar siempre el banco real. Si difiere, lanzará Reclasificación.
+                    resultado['mismo_banco'] = (banco_a_crudo == banco_b_crudo)
 
                     sector_a = str(ra.get('Sector', '')).strip()
                     sector_b = str(rb.get('Sector', '')).strip()
@@ -482,31 +476,32 @@ if archivo_subido is not None:
                     comentario_50 = []
                     
                     dias = res['dif_dias']
-                    if res['es_ip']:
+                    
+                    # FIX: Prioridad absoluta a la Reclasificación de Banco (Incluso para IP)
+                    if not res['mismo_banco']:
+                        estado_final = 'Reclasificacion de Banco'
+                        comentario_40.append(f"Registrado en '{res['banco_a']}'; debe ser '{res['banco_b']}'.")
+                        comentario_50.append(f"Registrado en '{res['banco_b']}'; debe ser '{res['banco_a']}'.")
+                    elif res['es_ip']:
                         if dias > TOPE_DIAS_ALERTA:
                             estado_final = 'Diferencia de fecha > 4 días'
-                            msg = f"Diferencia de fecha: {dias} día(s)."
+                            msg = f"Diferencia de fecha: {dias} día(s) (POS)."
                         elif dias > 1:
                             estado_final = 'Diferencia de fecha extensa'
-                            msg = f"Diferencia de fecha extensa: {dias} día(s)."
+                            msg = f"Diferencia de fecha extensa: {dias} día(s) (POS)."
                         elif dias == 1:
                             estado_final = 'Diferencia de fecha'
-                            msg = f"Diferencia de fecha: {dias} día(s)."
+                            msg = f"Diferencia de fecha: {dias} día(s) (POS)."
                         elif res['dif_valor'] and res['dif_valor'] > 0:
                             estado_final = 'Diferencia de valor'
-                            msg = f"Diferencia de valor: ${res['dif_valor']:,.0f}."
+                            msg = f"Diferencia de valor: ${res['dif_valor']:,.0f} (POS)."
                         else:
-                            estado_final = 'Cruce Múltiple IP/CB'
+                            estado_final = 'Conciliado'
                             msg = "Cruce exacto (POS)."
                             
                         if msg:
                             comentario_40.append(msg)
                             comentario_50.append(msg)
-
-                    elif not res['mismo_banco']:
-                        estado_final = 'Reclasificacion de Banco'
-                        comentario_40.append(f"Registrado en '{res['banco_a']}'; debe ser '{res['banco_b']}'.")
-                        comentario_50.append(f"Registrado en '{res['banco_b']}'; debe ser '{res['banco_a']}'.")
                     elif dias > TOPE_DIAS_ALERTA:
                         estado_final = 'Diferencia de fecha > 4 días'
                         msg = f"Diferencia de fecha > 4 días: {dias} día(s)."
@@ -608,6 +603,7 @@ if archivo_subido is not None:
                     df_cb_pend = df[(df[col_C].astype(str).str.upper() == 'CB') & (df[col_G] == '50') & (~df['ID_Linea'].isin(usados))]
 
                     if not df_ip_pend.empty and not df_cb_pend.empty:
+                        # Para la mezcla pura de montos, agrupamos por banco, sector y fecha
                         grp_ip2 = df_ip_pend.groupby([col_banco, 'Sector', 'Fecha_F'])['Abs_I'].sum().reset_index(name='S_IP')
                         grp_cb2 = df_cb_pend.groupby([col_banco, 'Sector', 'Fecha_F'])['Abs_I'].sum().reset_index(name='S_CB')
                         m2 = pd.merge(grp_cb2, grp_ip2, on=[col_banco, 'Sector', 'Fecha_F'])
@@ -632,7 +628,7 @@ if archivo_subido is not None:
                             
                             if es_exacto:
                                 estado = 'Cruce Múltiple IP/CB'
-                                txt = "Sugerencia POS: Cuadre por Fecha y Sector."
+                                txt = "Sugerencia POS: Cuadre perfecto por misma Fecha y Sector."
                             elif fila['DifV'] <= tol_valor_purpura:
                                 estado = 'Diferencia de valor'
                                 txt = f"Sugerencia POS: Diferencia de valor (${fila['DifV']:,.0f})."
@@ -647,6 +643,35 @@ if archivo_subido is not None:
 
                         for _, fila in exactos2.iterrows(): procesar_grupo_ip_fallback(fila, es_exacto=True)
                         for _, fila in con_tol2.iterrows(): procesar_grupo_ip_fallback(fila, es_exacto=False)
+
+                # ================================================================
+                # Regla 3c: IP 1 A 1 CON TOLERANCIA (Para capturar variaciones leves POS)
+                # ================================================================
+                if usar_ipcb:
+                    df_ip_pend = df[(df[col_C].astype(str).str.upper() == 'IP') & (df[col_G] == '40') & (~df['ID_Linea'].isin(usados))]
+                    df_cb_pend = df[(df[col_G] == '50') & (~df['ID_Linea'].isin(usados))]
+
+                    for id40, fila40 in df_ip_pend.iterrows():
+                        candidatos = df_cb_pend[
+                            (df_cb_pend['Sector'] == fila40['Sector']) | 
+                            (df_cb_pend['Sector'] == 'Sin clasificar') | 
+                            (fila40['Sector'] == 'Sin clasificar')
+                        ].copy()
+                        
+                        if candidatos.empty: continue
+                        
+                        candidatos['_dif_dias'] = (pd.to_datetime(candidatos['Fecha_F']) - pd.to_datetime(fila40['Fecha_F'])).dt.days.abs().fillna(999)
+                        candidatos = candidatos[candidatos['_dif_dias'] <= TOPE_DIAS_ALERTA]
+                        
+                        if candidatos.empty: continue
+                        
+                        candidatos['_dif_val'] = (candidatos['Abs_I'] - fila40['Abs_I']).abs()
+                        candidatos = candidatos[candidatos['_dif_val'] <= tol_valor_purpura]
+                        
+                        if len(candidatos) == 1:
+                            id50 = candidatos.iloc[0]['ID_Linea']
+                            ok, _ = clasificar_y_registrar(id40, id50)
+                            if ok: usados.update([id40, id50])
 
                     ip_sin_resolver = df[(df[col_C].astype(str).str.upper() == 'IP') & (df[col_G] == '40') & (~df['ID_Linea'].isin(usados))]
                     for idl in ip_sin_resolver['ID_Linea']:
@@ -838,9 +863,6 @@ if archivo_subido is not None:
                     posibles = posibles[posibles['_dif_dias'] <= TOPE_DIAS_ALERTA]
                     if posibles.empty: continue
                     posibles['_dif_valor'] = (posibles['Abs_I'] - fila40['Abs_I']).abs()
-                    
-                    # Esta regla solo aplica si la diferencia es MAYOR a 500 (Blanco). 
-                    # Las diferencias <= 500 (Morado) ya cruzaron en gate_seguridad.
                     posibles = posibles[posibles['_dif_valor'] > tol_valor_purpura]
                     if posibles.empty: continue
 
@@ -1110,6 +1132,21 @@ if archivo_subido is not None:
                             df.loc[df['ID_Linea'] == r['ID_Linea'], 'Candidatos_Conciliacion'] = f"{formato_linea(r['ID_Linea'])} | Candidatos posibles: {docs40_txt}"
                             df.loc[df['ID_Linea'] == r['ID_Linea'], 'Comentario'] = "Múltiples candidatos para reclasificación."
 
+                # ================================================================
+                # VALIDACION FINAL DE FECHA (Sin bloqueo de blancos)
+                # ================================================================
+                for id40, id50 in parejas_registradas:
+                    estado40 = str(df.loc[df['ID_Linea'] == id40, 'Estado_Conciliacion'].iloc[0])
+                    estado50 = str(df.loc[df['ID_Linea'] == id50, 'Estado_Conciliacion'].iloc[0])
+                    es_flex = 'referencia parcial' in estado40 or 'referencia parcial' in estado50
+                    if es_flex: continue
+
+                    dias = diferencia_dias_fila(id40, id50)
+                    if dias is not None and dias > TOPE_DIAS_ALERTA:
+                        for idx in [id40, id50]:
+                            df.loc[df['ID_Linea'] == idx, 'Estado_Conciliacion'] = 'Diferencia de fecha > 4 días'
+                            df.loc[df['ID_Linea'] == idx, 'Comentario'] = f'Diferencia de fecha extensa ({dias} días).'
+
                 # =====================================================
                 # MODO TARDE (SEGUNDA PASADA PROFUNDA T1 - T6)
                 # =====================================================
@@ -1142,7 +1179,7 @@ if archivo_subido is not None:
                             if dias is not None:
                                 if dias == 0:
                                     est = 'Conciliado'
-                                elif dias == 1:
+                                elif dias <= 1:
                                     est = 'Diferencia de fecha'
                                 else:
                                     est = 'Diferencia de fecha extensa'
@@ -1170,9 +1207,9 @@ if archivo_subido is not None:
                             dif_val = cand.iloc[0]['_dif_valor']
                             dif_d = int(cand.iloc[0]['_dif_dias'])
                             for idx in [id40, id50]:
-                                df.loc[df['ID_Linea'] == idx, 'Estado_Conciliacion'] = 'Pendiente o solicitar soporte'
+                                df.loc[df['ID_Linea'] == idx, 'Estado_Conciliacion'] = 'Diferencia de valor'
                                 df.loc[df['ID_Linea'] == idx, 'Candidatos_Conciliacion'] = f"{formato_linea(id40)} | {formato_linea(id50)}"
-                                df.loc[df['ID_Linea'] == idx, 'Comentario'] = f"Sugerencia: Diferencia de valor ${dif_val:,.0f} (dif {dif_d} días)."
+                                df.loc[df['ID_Linea'] == idx, 'Comentario'] = f"Diferencia de valor: ${dif_val:,.0f} (dif {dif_d} días)."
                             usados.update([id40, id50])
 
                     p40_h = df[(df[col_G] == '40') & (~df['Es_IP_G40']) & (~df['ID_Linea'].isin(usados))]
@@ -1220,7 +1257,7 @@ if archivo_subido is not None:
                     if 'Múltiples posiciones sin cruzar' in com: return [f'background-color: {COLOR_VERDE}; color: black'] * len(row)
                     
                     # Sugerencias y sumas POS -> Gris
-                    if 'Sugerencia POS' in com or 'Cruce exacto homologado (POS)' in com: 
+                    if 'Sugerencia POS' in com or 'Cruce exacto homologado (POS)' in com or '(POS)' in com: 
                         return [f'background-color: {COLOR_GRIS}; color: black'] * len(row)
                         
                     # Prioridad alta para fecha extensa o > 4 días -> Salmón
