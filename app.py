@@ -18,7 +18,7 @@ st.markdown('''
     </style>
 ''', unsafe_allow_html=True)
 
-st.title("🏦 Conciliación Automatizada 🤖")
+st.title("🏦 Conciliación Automatizada — Motor Integral v40 (Híbrida) 🤖")
 st.write("Sube tu archivo consolidado.")
 st.caption(
     "Selecciona opcion 'Tarde' solo despues de depurar los pendientes del primer cruce."
@@ -30,7 +30,7 @@ with st.expander("⚙️ Parámetros de tolerancia"):
         1, 10, 4
     )
     tol_valor_purpura = st.number_input(
-        "Diferencia máxima de valor ($) para alerta MORADA",
+        "Diferencia máxima de valor ($) para alerta MORADA o GRIS",
         min_value=1, value=500, step=50, max_value=500
     )
     tol_valor_abs_general = st.number_input(
@@ -249,7 +249,7 @@ if archivo_subido is not None:
                     return None
 
                 # =====================================================
-                # DETECCIÓN NEQUI
+                # DETECCIÓN NEQUI DIFUSA Y ESTRICTA AISLADA
                 # =====================================================
                 def _similitud(palabra, objetivo='NEQUI'):
                     return SequenceMatcher(None, palabra, objetivo).ratio()
@@ -410,10 +410,6 @@ if archivo_subido is not None:
                     dif_dias = abs((fa - fb).days)
                     resultado['dif_dias'] = dif_dias
 
-                    if dif_dias > TOPE_DIAS_ALERTA:
-                        resultado['motivo'] = "Excede límite de días permitidos"
-                        return resultado
-
                     def limpiar_nombre_banco(nombre_banco):
                         nombre = str(nombre_banco).upper()
                         if 'BANCOLOMBIA' in nombre: return 'Bancolombia'
@@ -434,7 +430,7 @@ if archivo_subido is not None:
                     resultado['banco_a'] = limpiar_nombre_banco(banco_a_crudo)
                     resultado['banco_b'] = limpiar_nombre_banco(banco_b_crudo)
 
-                    # FIX: Evaluar siempre el banco real. Si difiere, lanzará Reclasificación.
+                    # Evaluar siempre el banco real. Si difiere, lanzará Reclasificación.
                     resultado['mismo_banco'] = (banco_a_crudo == banco_b_crudo)
 
                     sector_a = str(ra.get('Sector', '')).strip()
@@ -477,7 +473,6 @@ if archivo_subido is not None:
                     
                     dias = res['dif_dias']
                     
-                    # FIX: Prioridad absoluta a la Reclasificación de Banco (Incluso para IP)
                     if not res['mismo_banco']:
                         estado_final = 'Reclasificacion de Banco'
                         comentario_40.append(f"Registrado en '{res['banco_a']}'; debe ser '{res['banco_b']}'.")
@@ -603,7 +598,7 @@ if archivo_subido is not None:
                     df_cb_pend = df[(df[col_C].astype(str).str.upper() == 'CB') & (df[col_G] == '50') & (~df['ID_Linea'].isin(usados))]
 
                     if not df_ip_pend.empty and not df_cb_pend.empty:
-                        # Para la mezcla pura de montos, agrupamos por banco, sector y fecha
+                        # Agrupamos por banco, sector y fecha
                         grp_ip2 = df_ip_pend.groupby([col_banco, 'Sector', 'Fecha_F'])['Abs_I'].sum().reset_index(name='S_IP')
                         grp_cb2 = df_cb_pend.groupby([col_banco, 'Sector', 'Fecha_F'])['Abs_I'].sum().reset_index(name='S_CB')
                         m2 = pd.merge(grp_cb2, grp_ip2, on=[col_banco, 'Sector', 'Fecha_F'])
@@ -668,8 +663,12 @@ if archivo_subido is not None:
                         candidatos['_dif_val'] = (candidatos['Abs_I'] - fila40['Abs_I']).abs()
                         candidatos = candidatos[candidatos['_dif_val'] <= tol_valor_purpura]
                         
-                        if len(candidatos) == 1:
+                        if not candidatos.empty:
+                            # Elegir el mejor candidato ordenando por coincidencia de sector, cercanía de fecha y menor dif de valor
+                            candidatos['_mismo_sec'] = candidatos['Sector'] == fila40['Sector']
+                            candidatos = candidatos.sort_values(['_mismo_sec', '_dif_dias', '_dif_val'], ascending=[False, True, True])
                             id50 = candidatos.iloc[0]['ID_Linea']
+                            
                             ok, _ = clasificar_y_registrar(id40, id50)
                             if ok: usados.update([id40, id50])
 
@@ -863,6 +862,8 @@ if archivo_subido is not None:
                     posibles = posibles[posibles['_dif_dias'] <= TOPE_DIAS_ALERTA]
                     if posibles.empty: continue
                     posibles['_dif_valor'] = (posibles['Abs_I'] - fila40['Abs_I']).abs()
+                    
+                    # Filtramos por mayores a 500. Las de <= 500 (Morado) cruzaron antes.
                     posibles = posibles[posibles['_dif_valor'] > tol_valor_purpura]
                     if posibles.empty: continue
 
@@ -1249,26 +1250,32 @@ if archivo_subido is not None:
                 df_final['Estado_Tecnico'] = df_final['Estado_Conciliacion']
                 df_final['Comentario_Tecnico'] = df_final['Comentario']
 
-                # Asignamos el color con la nueva lógica de fechas y colores
+                # Asignamos el color con la nueva lógica estricta solicitada
                 def color_fila(row):
                     est = str(row['Estado_Conciliacion']).strip()
                     com = str(row['Comentario']).strip()
                     
-                    if 'Múltiples posiciones sin cruzar' in com: return [f'background-color: {COLOR_VERDE}; color: black'] * len(row)
-                    
-                    # Sugerencias y sumas POS -> Gris
-                    if 'Sugerencia POS' in com or 'Cruce exacto homologado (POS)' in com or '(POS)' in com: 
-                        return [f'background-color: {COLOR_GRIS}; color: black'] * len(row)
+                    if 'Múltiples posiciones sin cruzar' in com: 
+                        return [f'background-color: {COLOR_VERDE}; color: black'] * len(row)
                         
-                    # Prioridad alta para fecha extensa o > 4 días -> Salmón
+                    # Prioridad alta para fecha extensa o > 4 días -> Salmón (Incluso si es POS)
                     if est == 'Diferencia de fecha extensa' or est == 'Diferencia de fecha > 4 días' or 'extensa' in com or '> 4 días' in com: 
                         return [f'background-color: {COLOR_SALMON}; color: black'] * len(row)
+                        
+                    # Fechas exactamente 1 día -> Morado (Incluso si es POS)
+                    if est == 'Diferencia de fecha': 
+                        return [f'background-color: {COLOR_MORADO}; color: black'] * len(row)
+                        
+                    # Si es POS y no tuvo diferencia de fecha, va gris (Incluso si hay diferencia de valor <= 500)
+                    if 'Sugerencia POS' in com or 'Cruce exacto homologado (POS)' in com or '(POS)' in com: 
+                        return [f'background-color: {COLOR_GRIS}; color: black'] * len(row)
                     
                     if est == 'Conciliado': return [f'background-color: {COLOR_AZUL}; color: black'] * len(row)
                     if est == 'Reclasificacion de Banco': return [f'background-color: {COLOR_DURAZNO}; color: black'] * len(row)
                     
-                    # Fechas exactamente 1 día o valor <= 500 -> Morado
-                    if est == 'Diferencia de fecha' or est == 'Diferencia de valor': return [f'background-color: {COLOR_MORADO}; color: black'] * len(row)
+                    # Diferencia de valor (para los NO POS)
+                    if est == 'Diferencia de valor': return [f'background-color: {COLOR_MORADO}; color: black'] * len(row)
+                    
                     if 'forzado' in com or 'Tarde' in com: return [f'background-color: {COLOR_AMARILLO}; color: black'] * len(row)
                     
                     return [f'background-color: {COLOR_BLANCO}; color: black'] * len(row)
