@@ -278,13 +278,23 @@ if archivo_subido is not None:
                         return False
 
                     if g_val == '40':
+                        # FIX CRÍTICO: antes el patrón 'T'/'T-'/'T/'/'/' se evaluaba
+                        # SIN exigir que el documento fuera DZ, así que un IP (punto
+                        # de venta) con Asignación 'T...' quedaba marcado como Nequi
+                        # por error y se mezclaba en la Regla 8 (Nequi por totales).
+                        # La regla de negocio es explícita: "los IP van estrictamente
+                        # por la base de datos" -- NUNCA deben calificar como Nequi,
+                        # sin importar qué diga su Asignación. Ahora TODA la
+                        # detección Nequi para clave 40 exige c_val == 'DZ' primero.
+                        if c_val != 'DZ':
+                            return False
+
                         val_a = str(row.get(col_A, '')).strip().upper()
                         if val_a == 'T' or val_a.startswith('T-') or val_a.startswith('T/') or val_a == '/':
                             return True
-                            
-                        if c_val == 'DZ':
-                            texto_completo = f"{row.get(col_K, '') if col_K else ''} {row.get(col_A, '')} {row.get(col_H, '')}"
-                            return contiene_nequi_fuzzy(texto_completo, umbral)
+
+                        texto_completo = f"{row.get(col_K, '') if col_K else ''} {row.get(col_A, '')} {row.get(col_H, '')}"
+                        return contiene_nequi_fuzzy(texto_completo, umbral)
 
                     return False
 
@@ -638,14 +648,27 @@ if archivo_subido is not None:
                 # Regla 3c: IP 1 A 1 CON TOLERANCIA (Priorizando el mejor candidato)
                 # ================================================================
                 if usar_ipcb:
-                    df_ip_pend = df[(df[col_C].astype(str).str.upper() == 'IP') & (df[col_G] == '40') & (~df['ID_Linea'].isin(usados))]
-                    df_cb_pend = df[(df[col_G] == '50') & (~df['ID_Linea'].isin(usados))]
+                    # FIX CRÍTICO: esta regla conciliaba un IP contra CUALQUIER CB
+                    # cercano en zona/fecha/valor, SIN exigir que la referencia
+                    # estuviera en la base de datos homologada -- justo la
+                    # restricción estricta que la Regla 3/9 exige ("los IP van
+                    # estrictamente por la base de datos"). Ahora se exige
+                    # Ref_H_Homologada no nulo en ambos lados.
+                    df_ip_pend = df[
+                        (df[col_C].astype(str).str.upper() == 'IP') & (df[col_G] == '40') &
+                        (~df['ID_Linea'].isin(usados)) & (df['Ref_H_Homologada'].notna())
+                    ]
+                    df_cb_pend = df[
+                        (df[col_G] == '50') & (~df['ID_Linea'].isin(usados)) &
+                        (df['Ref_H_Homologada'].notna())
+                    ]
 
                     for id40, fila40 in df_ip_pend.iterrows():
                         candidatos = df_cb_pend[
-                            (df_cb_pend['Sector'] == fila40['Sector']) | 
-                            (df_cb_pend['Sector'] == 'Sin clasificar') | 
-                            (fila40['Sector'] == 'Sin clasificar')
+                            (df_cb_pend['Ref_H_Homologada'] == fila40['Ref_H_Homologada']) &
+                            ((df_cb_pend['Sector'] == fila40['Sector']) |
+                             (df_cb_pend['Sector'] == 'Sin clasificar') |
+                             (fila40['Sector'] == 'Sin clasificar'))
                         ].copy()
                         
                         if candidatos.empty: continue
@@ -673,8 +696,12 @@ if archivo_subido is not None:
 
                 # =====================================================
                 # Regla 8: NEQUI POR TOTALES Y FIFO
+                # Blindaje adicional (segunda capa, además del fix en
+                # es_nequi_flexible): un IP jamás debe entrar aquí, sin importar
+                # lo que diga Es_Nequi.
                 # =====================================================
-                df_nequi_dz = df[(df[col_G] == '40') & (df['Es_Nequi'] == True) & (~df['ID_Linea'].isin(usados))]
+                mask_no_ip_g40 = (~df['Es_IP_G40']) if usar_ipcb else True
+                df_nequi_dz = df[(df[col_G] == '40') & (df['Es_Nequi'] == True) & mask_no_ip_g40 & (~df['ID_Linea'].isin(usados))]
                 df_cb_disponible = df[(df[col_G] == '50') & (df['Es_Nequi'] == True) & (~df['ID_Linea'].isin(usados))]
                 
                 if usar_ipcb:
