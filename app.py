@@ -1,9 +1,10 @@
 # app_conciliacion_v40_hibrida_corregida_final.py
 #
-# FIX 1: Error técnico '.round()' corregido en la Regla 3b (Mezcla de IP).
-# FIX 2: Pestaña NOVEDADES_Y_PENDIENTES_40 atrapa ahora todos los no conciliados.
-# FIX 3: Pestaña REVISAR_RECLASIFICACIONES creada (G=40 y G=50) reemplazando posiciones múltiples.
-# FIX 4: Prevención de KeyError en Regla 7B y ampliación del espectro de Nequi a números celulares.
+# FIX 1: Error técnico '.round()' corregido.
+# FIX 2: Pestaña NOVEDADES_Y_PENDIENTES_40 y REVISAR_RECLASIFICACIONES aplicadas.
+# FIX 3: Prevención de KeyError en Regla 7B y ampliación del espectro Nequi.
+# FIX CRÍTICO: Aislamiento bilateral estricto. Tanto 40 como 50 que coincidan 
+# con la BD de Puntos de Venta quedan excluidos de TODAS las demás reglas (Nequi, Flex, etc).
 
 import streamlit as st
 import pandas as pd
@@ -167,7 +168,7 @@ if archivo_subido is not None:
                 df['B_Repite'] = df.groupby(col_B)[col_B].transform('count') > 1
 
                 # =====================================================
-                # 4. SECTORIZACIÓN
+                # 4. SECTORIZACIÓN E IDENTIFICACIÓN POS
                 # =====================================================
                 mapeo_referencias_dist = {
                     "11760923": "Dist Acopi", "11761277": "Dist Acopi", "11761293": "Dist Acopi",
@@ -250,6 +251,17 @@ if archivo_subido is not None:
                                 return k8
                     return None
 
+                df['Ref_H_Homologada'] = df.apply(obtener_ref_homologada, axis=1)
+
+                # AISLAMIENTO BILATERAL (ESTRICTO) DE PUNTOS DE VENTA
+                # Todo documento 40 que sea IP, o todo 50 que coincida con la base POS, queda atrapado aquí.
+                if usar_ipcb:
+                    df['Es_IP_G40'] = (df[col_G] == '40') & ((df[col_C].astype(str).str.upper() == 'IP') | df['Ref_H_Homologada'].notna())
+                    df['Es_CB_G50'] = (df[col_G] == '50') & df['Ref_H_Homologada'].notna()
+                else:
+                    df['Es_IP_G40'] = False
+                    df['Es_CB_G50'] = False
+
                 # =====================================================
                 # DETECCIÓN NEQUI
                 # =====================================================
@@ -276,18 +288,14 @@ if archivo_subido is not None:
                             h_num = int(h_clean)
                             if 100_000 <= h_num <= 999_999_999: return True
                             if 1_000_000_000 <= h_num <= 1_399_999_999: return True
-                            # FIX CRÍTICO: Integración del rango celular colombiano (300xxxxxxx)
                             if 3_000_000_000 <= h_num <= 3_999_999_999: return True 
                         return False
 
                     if g_val == '40':
-                        if c_val != 'DZ':
-                            return False
-
+                        if c_val != 'DZ': return False
                         val_a = str(row.get(col_A, '')).strip().upper()
                         if val_a == 'T' or val_a.startswith('T-') or val_a.startswith('T/') or val_a == '/':
                             return True
-
                         texto_completo = f"{row.get(col_K, '') if col_K else ''} {row.get(col_A, '')} {row.get(col_H, '')}"
                         return contiene_nequi_fuzzy(texto_completo, umbral)
 
@@ -310,13 +318,6 @@ if archivo_subido is not None:
                 df['Es_Nequi'] = df.apply(lambda r: es_nequi_flexible(r, umbral_fuzzy_nequi), axis=1)
                 df['H_Limpia'] = df[col_H].apply(limpiar_numero)
                 df['A_Limpia'] = df[col_A].apply(limpiar_numero)
-
-                if usar_ipcb:
-                    df['Es_IP_G40'] = (df[col_C].astype(str).str.upper() == 'IP') & (df[col_G] == '40')
-                    df['Es_CB_G50'] = False
-                else:
-                    df['Es_IP_G40'] = False
-                    df['Es_CB_G50'] = False
 
                 # =====================================================
                 # FUNCIONES AUXILIARES
@@ -362,6 +363,10 @@ if archivo_subido is not None:
                     if pd.isna(f40) or pd.isna(f50): return None
                     return abs((f40 - f50).days)
 
+                def fecha_dentro_de_4_dias(id40, id50):
+                    dias = diferencia_dias_fila(id40, id50)
+                    return dias is not None and dias <= TOPE_DIAS_ALERTA
+
                 def registrar_pareja_por_fecha(id40, id50, ignorar=None):
                     dias = diferencia_dias_fila(id40, id50)
                     texto = f'{formato_linea(id40)} | {formato_linea(id50)}'
@@ -399,9 +404,7 @@ if archivo_subido is not None:
                         'mismo_sector': True, 'es_nequi': False, 'es_ip': False
                     }
 
-                    clase_a = str(ra.get(col_C, '')).strip().upper() if usar_ipcb else ''
-                    clase_b = str(rb.get(col_C, '')).strip().upper() if usar_ipcb else ''
-                    es_ip = (clase_a == 'IP') or (clase_b == 'IP')
+                    es_ip = ra.get('Es_IP_G40', False) or rb.get('Es_CB_G50', False) or (str(ra.get(col_C, '')).strip().upper() == 'IP') or (str(rb.get(col_C, '')).strip().upper() == 'IP')
                     resultado['es_ip'] = es_ip
 
                     fa, fb = ra['Fecha_F'], rb['Fecha_F']
@@ -431,7 +434,12 @@ if archivo_subido is not None:
                     
                     resultado['banco_a'] = limpiar_nombre_banco(banco_a_crudo)
                     resultado['banco_b'] = limpiar_nombre_banco(banco_b_crudo)
-                    resultado['mismo_banco'] = (banco_a_crudo == banco_b_crudo)
+
+                    # Inmunidad de Banco para IP (Evita Reclasificaciones falsas en cuentas de POS)
+                    if es_ip:
+                        resultado['mismo_banco'] = True
+                    else:
+                        resultado['mismo_banco'] = (banco_a_crudo == banco_b_crudo)
 
                     sector_a = str(ra.get('Sector', '')).strip()
                     sector_b = str(rb.get('Sector', '')).strip()
@@ -539,15 +547,13 @@ if archivo_subido is not None:
                     return True, estado_final
 
                 # =====================================================
-                # Regla 3a, 3b, 3c... (Reglas de cruce sin modificaciones funcionales pesadas)
+                # Regla 3a: IP Homologados Agrupado ESTRICTO BD
                 # =====================================================
                 ind_ip_exacto = set()
                 ind_ip_tolerancia = set()
                 if usar_ipcb:
-                    df['Ref_H_Homologada'] = df.apply(obtener_ref_homologada, axis=1)
-
-                    df_ip = df[(df[col_C].astype(str).str.upper() == 'IP') & (df[col_G] == '40') & df['Ref_H_Homologada'].notna()]
-                    df_cb = df[(df[col_C].astype(str).str.upper() == 'CB') & (df[col_G] == '50') & df['Ref_H_Homologada'].notna()]
+                    df_ip = df[df['Es_IP_G40'] & df['Ref_H_Homologada'].notna()]
+                    df_cb = df[df['Es_CB_G50'] & df['Ref_H_Homologada'].notna()]
 
                     if not df_ip.empty and not df_cb.empty:
                         grp_ip = df_ip.groupby([col_banco, 'Sector', 'Ref_H_Homologada'])['Abs_I'].sum().reset_index(name='S_IP')
@@ -590,9 +596,12 @@ if archivo_subido is not None:
                         for _, fila in exactos.iterrows(): procesar_grupo_ip(fila, es_exacto=True)
                         for _, fila in con_tol.iterrows(): procesar_grupo_ip(fila, es_exacto=False)
 
+                # ================================================================
+                # Regla 3b: MEZCLA Y SUMA IP (Por Fecha y Sector) Plan B
+                # ================================================================
                 if usar_ipcb:
-                    df_ip_pend = df[(df[col_C].astype(str).str.upper() == 'IP') & (df[col_G] == '40') & (~df['ID_Linea'].isin(usados))]
-                    df_cb_pend = df[(df[col_C].astype(str).str.upper() == 'CB') & (df[col_G] == '50') & (~df['ID_Linea'].isin(usados))]
+                    df_ip_pend = df[df['Es_IP_G40'] & (~df['ID_Linea'].isin(usados))]
+                    df_cb_pend = df[df['Es_CB_G50'] & (~df['ID_Linea'].isin(usados))]
 
                     if not df_ip_pend.empty and not df_cb_pend.empty:
                         grp_ip2 = df_ip_pend.groupby([col_banco, 'Sector', 'Fecha_F'])['Abs_I'].sum().reset_index(name='S_IP')
@@ -629,15 +638,12 @@ if archivo_subido is not None:
 
                         for _, fila in m2.iterrows(): procesar_grupo_ip_fallback(fila)
 
+                # ================================================================
+                # Regla 3c: IP 1 A 1 CON TOLERANCIA (Priorizando el mejor candidato)
+                # ================================================================
                 if usar_ipcb:
-                    df_ip_pend = df[
-                        (df[col_C].astype(str).str.upper() == 'IP') & (df[col_G] == '40') &
-                        (~df['ID_Linea'].isin(usados)) & (df['Ref_H_Homologada'].notna())
-                    ]
-                    df_cb_pend = df[
-                        (df[col_G] == '50') & (~df['ID_Linea'].isin(usados)) &
-                        (df['Ref_H_Homologada'].notna())
-                    ]
+                    df_ip_pend = df[df['Es_IP_G40'] & (~df['ID_Linea'].isin(usados)) & df['Ref_H_Homologada'].notna()]
+                    df_cb_pend = df[df['Es_CB_G50'] & (~df['ID_Linea'].isin(usados)) & df['Ref_H_Homologada'].notna()]
 
                     for id40, fila40 in df_ip_pend.iterrows():
                         candidatos = df_cb_pend[
@@ -665,19 +671,22 @@ if archivo_subido is not None:
                             ok, _ = clasificar_y_registrar(id40, id50)
                             if ok: usados.update([id40, id50])
 
-                    ip_sin_resolver = df[(df[col_C].astype(str).str.upper() == 'IP') & (df[col_G] == '40') & (~df['ID_Linea'].isin(usados))]
+                    ip_sin_resolver = df[df['Es_IP_G40'] & (~df['ID_Linea'].isin(usados))]
                     for idl in ip_sin_resolver['ID_Linea']:
                         escribir_comentario(idl, "Falta Referencia POS.", append=False)
+                        
+                    cb_pos_sin_resolver = df[df['Es_CB_G50'] & (~df['ID_Linea'].isin(usados))]
+                    for idl in cb_pos_sin_resolver['ID_Linea']:
+                        escribir_comentario(idl, "Ingreso POS sin contraparte.", append=False)
 
-                mask_no_ip_g40 = (~df['Es_IP_G40']) if usar_ipcb else True
-                df_nequi_dz = df[(df[col_G] == '40') & (df['Es_Nequi'] == True) & mask_no_ip_g40 & (~df['ID_Linea'].isin(usados))]
-                df_cb_disponible = df[(df[col_G] == '50') & (df['Es_Nequi'] == True) & (~df['ID_Linea'].isin(usados))]
-                
-                if usar_ipcb:
-                    df_cb_disponible = df_cb_disponible[df_cb_disponible[col_C].astype(str).str.upper() != 'IP']
+                # =====================================================
+                # Regla 8: NEQUI POR TOTALES Y FIFO
+                # =====================================================
+                df_nequi_40 = df[(df[col_G] == '40') & (df['Es_Nequi'] == True) & (~df['Es_IP_G40']) & (~df['ID_Linea'].isin(usados))]
+                df_cb_disponible = df[(df[col_G] == '50') & (df['Es_Nequi'] == True) & (~df['Es_CB_G50']) & (~df['ID_Linea'].isin(usados))]
 
-                if not df_nequi_dz.empty and not df_cb_disponible.empty:
-                    for (banco_g, sector_g, fecha_g), grupo_dz in df_nequi_dz.groupby([col_banco, 'Sector', 'Fecha_F']):
+                if not df_nequi_40.empty and not df_cb_disponible.empty:
+                    for (banco_g, sector_g, fecha_g), grupo_dz in df_nequi_40.groupby([col_banco, 'Sector', 'Fecha_F']):
                         grupo_dz = grupo_dz[~grupo_dz['ID_Linea'].isin(usados)]
                         if grupo_dz.empty: continue
                         
@@ -716,6 +725,9 @@ if archivo_subido is not None:
                                     escribir_candidatos(idl, texto_cand)
                                 escribir_comentario(idl, "Totales Nequi no cuadran. Revisión manual.", append=False)
 
+                # =====================================================
+                # Regla 1 — A debe coincidir con H (exacto)
+                # =====================================================
                 df_40 = df[(df[col_G] == '40') & (~df['Es_IP_G40'])].copy()
                 df_50 = df[(df[col_G] == '50') & (~df['Es_CB_G50'])].copy()
 
@@ -738,6 +750,9 @@ if archivo_subido is not None:
                 df_50_limpia = df_50[(~df_50['ID_Linea'].isin(usados)) & (df_50['H_Limpia'] != '')].copy()
                 emparejar_1a1_por_llave(df_40_limpia, df_50_limpia, [col_banco, 'Abs_I', 'A_Limpia'], [col_banco, 'Abs_I', 'H_Limpia'])
 
+                # ================================================================
+                # FLEX POR REFERENCIA PARCIAL
+                # ================================================================
                 pend40_flex = df[(df[col_G] == '40') & (~df['Es_IP_G40']) & (~df['ID_Linea'].isin(usados))]
                 pend50_flex = df[(df[col_G] == '50') & (~df['Es_CB_G50']) & (~df['ID_Linea'].isin(usados))]
 
@@ -760,6 +775,9 @@ if archivo_subido is not None:
                     usados.update([id40, id50])
                     parejas_registradas.append((id40, id50))
 
+                # =====================================================
+                # Regla 6 EXPLÍCITA — RECLASIFICACIÓN DE BANCO
+                # =====================================================
                 df_40 = df[(df[col_G] == '40') & (~df['Es_IP_G40']) & (~df['ID_Linea'].isin(usados))].copy()
                 df_50 = df[(df[col_G] == '50') & (~df['Es_CB_G50']) & (~df['ID_Linea'].isin(usados))].copy()
 
@@ -785,6 +803,9 @@ if archivo_subido is not None:
                 df_50_r6_limpia = df_50[(~df_50['ID_Linea'].isin(usados)) & (df_50['H_Limpia'] != '')].copy()
                 emparejar_reclasificacion(df_40_r6_limpia, df_50_r6_limpia, ['Abs_I', 'A_Limpia'], ['Abs_I', 'H_Limpia'])
 
+                # ================================================================
+                # SECTORIZACION MULTIPLE FIFO
+                # ================================================================
                 for (banco_g, sector_g, importe_g), lado40 in df[
                     (df[col_G] == '40') & (~df['Es_IP_G40']) & (~df['ID_Linea'].isin(usados)) & (df['Sector'] != 'Sin clasificar')
                 ].groupby([col_banco, 'Sector', 'Abs_I']):
@@ -799,6 +820,7 @@ if archivo_subido is not None:
                         if id40 in usados or id50 in usados: continue
                         registrar_pareja_por_fecha(id40, id50)
 
+                # Sobrantes de sectorización desbalanceada
                 df_40 = df[(df[col_G] == '40') & (~df['Es_IP_G40']) & (~df['ID_Linea'].isin(usados))]
                 df_50 = df[(df[col_G] == '50') & (~df['Es_CB_G50']) & (~df['ID_Linea'].isin(usados))]
                 d40_sect = df_40[df_40['Sector'] != 'Sin clasificar']
@@ -846,7 +868,6 @@ if archivo_subido is not None:
 
                     id50 = posibles.sort_values(['_dif_valor', '_dif_dias']).iloc[0]['ID_Linea']
                     
-                    # FIX CRÍTICO: Búsqueda segura en DataFrame original por ID_Linea (prevención KeyError)
                     valor_candidato = df.loc[df['ID_Linea'] == id50, 'Abs_I'].iloc[0]
                     diferencia = round(abs(fila40['Abs_I'] - valor_candidato), 2)
                     
@@ -927,7 +948,7 @@ if archivo_subido is not None:
                         
                     return False
 
-                # Pasada estricta por fecha Nequi
+                # Pasada estricta
                 for _, r40 in df_nequi_40.iterrows():
                     id40 = r40['ID_Linea']
                     if id40 in usados: continue
@@ -951,9 +972,10 @@ if archivo_subido is not None:
                     cand_50_estrict['_dif_dias'] = (cand_50_estrict['Fecha_F'] - r40['Fecha_F']).dt.days.abs().fillna(999)
                     cand_50_estrict = cand_50_estrict[cand_50_estrict['_dif_dias'] == 0]
                     if cand_50_estrict.empty: continue
+
                     procesar_candidato_nequi(id40, cand_50_estrict)
 
-                # Pasada flexible por fecha Nequi (aislando DataFrame)
+                # Pasada flexible
                 for _, r40 in df_nequi_40.iterrows():
                     id40 = r40['ID_Linea']
                     if id40 in usados: continue
@@ -977,6 +999,7 @@ if archivo_subido is not None:
                     cand_50_flex['_dif_dias'] = (cand_50_flex['Fecha_F'] - r40['Fecha_F']).dt.days.abs().fillna(999)
                     cand_50_flex = cand_50_flex.sort_values('_dif_dias')
                     if cand_50_flex.empty: continue
+
                     procesar_candidato_nequi(id40, cand_50_flex)
 
                 # =====================================================
@@ -1221,7 +1244,8 @@ if archivo_subido is not None:
                 sin_p = df['Estado_Conciliacion'] == 'Pendiente'
                 if usar_ipcb:
                     df.loc[sin_p & df['Es_IP_G40'] & (df['Comentario'] == ''), 'Comentario'] = 'Falta Referencia POS.'
-                    df.loc[sin_p & ~df['Es_IP_G40'] & (df['Comentario'] == ''), 'Comentario'] = 'Revisión manual requerida.'
+                    df.loc[sin_p & df['Es_CB_G50'] & (df['Comentario'] == ''), 'Comentario'] = 'Ingreso POS sin contraparte.'
+                    df.loc[sin_p & ~df['Es_IP_G40'] & ~df['Es_CB_G50'] & (df['Comentario'] == ''), 'Comentario'] = 'Revisión manual requerida.'
                 else:
                     df.loc[sin_p & (df['Comentario'] == ''), 'Comentario'] = 'Revisión manual requerida.'
 
@@ -1229,6 +1253,7 @@ if archivo_subido is not None:
                 df_final['Estado_Tecnico'] = df_final['Estado_Conciliacion']
                 df_final['Comentario_Tecnico'] = df_final['Comentario']
 
+                # Asignamos el color con la nueva lógica estricta solicitada
                 def color_fila(row):
                     est = str(row['Estado_Conciliacion']).strip()
                     com = str(row['Comentario']).strip()
@@ -1236,18 +1261,22 @@ if archivo_subido is not None:
                     if 'Múltiples posiciones sin cruzar' in com: 
                         return [f'background-color: {COLOR_VERDE}; color: black'] * len(row)
                         
+                    # Prioridad alta para fecha extensa o > 4 días -> Salmón (Incluso si es POS)
                     if est == 'Diferencia de fecha extensa' or est == 'Diferencia de fecha > 4 días' or 'extensa' in com or '> 4 días' in com: 
                         return [f'background-color: {COLOR_SALMON}; color: black'] * len(row)
                         
+                    # Fechas exactamente 1 día -> Morado (Incluso si es POS)
                     if est == 'Diferencia de fecha': 
                         return [f'background-color: {COLOR_MORADO}; color: black'] * len(row)
                         
+                    # Si es POS y no tuvo diferencia de fecha, va gris (Incluso si hay diferencia de valor <= 500)
                     if 'Sugerencia POS' in com or 'Cruce exacto homologado (POS)' in com or '(POS)' in com: 
                         return [f'background-color: {COLOR_GRIS}; color: black'] * len(row)
                     
                     if est == 'Conciliado': return [f'background-color: {COLOR_AZUL}; color: black'] * len(row)
                     if est == 'Reclasificacion de Banco': return [f'background-color: {COLOR_DURAZNO}; color: black'] * len(row)
                     
+                    # Diferencia de valor (para los NO POS)
                     if est == 'Diferencia de valor': return [f'background-color: {COLOR_MORADO}; color: black'] * len(row)
                     
                     if 'forzado' in com or 'Tarde' in com: return [f'background-color: {COLOR_AMARILLO}; color: black'] * len(row)
@@ -1368,6 +1397,7 @@ if archivo_subido is not None:
                     if modo_tarde:
                         df_tarde = df_final[df_final['Comentario'].str.contains('forzado|gasto', case=False, na=False)].copy()
                         if not df_tarde.empty:
+                            # Prevenir error convirtiendo a numerico y rellenando nulos
                             df_tarde['Abs_I'] = pd.to_numeric(df_tarde[col_I], errors='coerce').fillna(0).abs()
                             df_tarde = df_tarde.sort_values(by=['Abs_I', col_F])
                             hoja_segura(writer, vista(df_tarde), 'REVISION_TARDE', estilo=True)
