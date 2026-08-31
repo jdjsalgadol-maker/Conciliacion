@@ -2,9 +2,10 @@
 #
 # FIX 1: Error técnico '.round()' corregido.
 # FIX 2: Pestaña NOVEDADES_Y_PENDIENTES_40 y REVISAR_RECLASIFICACIONES aplicadas.
-# FIX 3: Prevención de KeyError en Regla 7B y ampliación del espectro Nequi.
-# FIX CRÍTICO: Aislamiento bilateral estricto. Tanto 40 como 50 que coincidan 
-# con la BD de Puntos de Venta quedan excluidos de TODAS las demás reglas (Nequi, Flex, etc).
+# FIX 3: Prevención de KeyError en Regla 7B.
+# FIX 4: Aislamiento bilateral estricto de POS (40 y 50).
+# FIX 5: Regla Nequi super-flexibilizada para admitir Daviplata, 
+#        cuentas Bancolombia (9 billones) y palabras "TRANSFERENCIA" completas.
 
 import streamlit as st
 import pandas as pd
@@ -48,7 +49,7 @@ with st.expander("⚙️ Parámetros de tolerancia"):
     multiplo_redondo = st.selectbox("Múltiplo para valor 'redondo' (alta ambigüedad)", [50000, 100000], index=1)
     
     umbral_fuzzy_nequi = st.slider(
-        "Sensibilidad de coincidencia difusa para 'NEQUI' en legalizaciones DZ (0.60 = más flexible, 0.95 = más estricto)",
+        "Sensibilidad de coincidencia difusa para app transferencias (Nequi/Daviplata)",
         0.60, 0.95, 0.72, step=0.01
     )
 
@@ -59,14 +60,14 @@ with st.expander("⚙️ Parámetros de tolerancia"):
         help="Ejecuta una segunda pasada profunda (T1 a T6) y genera una pestaña ordenada de menor a mayor."
     )
 
-COLOR_AZUL = "#C5D9F1"      # Conciliado perfecto
-COLOR_VERDE = "#A9D18E"     # DZ multiposición sin conciliar
-COLOR_SALMON = "#F5B7A1"    # Diferencia de fecha extensa (>1 día)
-COLOR_MORADO = "#C39BD3"    # Diferencia de valor O fecha de exactamente 1 día
-COLOR_DURAZNO = "#FAD7A0"   # Reclasificación de banco
-COLOR_BLANCO = "#FFFFFF"    # Pendiente / Sugerencias estándar
-COLOR_GRIS = "#D0CECE"      # Cruces IP/CB (Regla 3 estricta, mezcla, o 1 a 1 con tolerancia)
-COLOR_AMARILLO = "#FFF2CC"  # Sugerencias del Modo Tarde
+COLOR_AZUL = "#C5D9F1"      
+COLOR_VERDE = "#A9D18E"     
+COLOR_SALMON = "#F5B7A1"    
+COLOR_MORADO = "#C39BD3"    
+COLOR_DURAZNO = "#FAD7A0"   
+COLOR_BLANCO = "#FFFFFF"    
+COLOR_GRIS = "#D0CECE"      
+COLOR_AMARILLO = "#FFF2CC"  
 
 archivo_subido = st.file_uploader("Selecciona el archivo de Excel o CSV", type=['xlsx', 'csv'])
 
@@ -254,7 +255,6 @@ if archivo_subido is not None:
                 df['Ref_H_Homologada'] = df.apply(obtener_ref_homologada, axis=1)
 
                 # AISLAMIENTO BILATERAL (ESTRICTO) DE PUNTOS DE VENTA
-                # Todo documento 40 que sea IP, o todo 50 que coincida con la base POS, queda atrapado aquí.
                 if usar_ipcb:
                     df['Es_IP_G40'] = (df[col_G] == '40') & ((df[col_C].astype(str).str.upper() == 'IP') | df['Ref_H_Homologada'].notna())
                     df['Es_CB_G50'] = (df[col_G] == '50') & df['Ref_H_Homologada'].notna()
@@ -263,41 +263,52 @@ if archivo_subido is not None:
                     df['Es_CB_G50'] = False
 
                 # =====================================================
-                # DETECCIÓN NEQUI
+                # FIX: DETECCIÓN SÚPER-FLEXIBLE DE NEQUI/APP TRANSFERS
                 # =====================================================
                 def _similitud(palabra, objetivo='NEQUI'):
                     return SequenceMatcher(None, palabra, objetivo).ratio()
 
-                def contiene_nequi_fuzzy(texto, umbral):
+                def contiene_nequi_fuzzy(texto, palabra_objetivo, umbral):
                     if not texto: return False
                     texto_up = str(texto).upper()
-                    if 'NEQUI' in texto_up: return True
-                    palabras = re.findall(r'[A-ZÑ]{3,8}', texto_up)
+                    if palabra_objetivo in texto_up: return True
+                    palabras = re.findall(r'[A-ZÑ]{3,15}', texto_up)
                     for p in palabras:
-                        if _similitud(p, 'NEQUI') >= umbral: return True
+                        if _similitud(p, palabra_objetivo) >= umbral: return True
                     return False
 
                 def es_nequi_flexible(row, umbral):
                     g_val = str(row.get(col_G, '')).strip()
                     c_val = str(row.get(col_C, '')).strip().upper() if usar_ipcb else ''
+                    
+                    val_a = str(row.get(col_A, '')).strip().upper()
+                    val_k = str(row.get(col_K, '')).strip().upper()
+                    val_h = str(row.get(col_H, '')).strip().upper()
+                    texto_completo = f"{val_k} {val_a} {val_h}"
 
                     if g_val == '50':
-                        h_raw = str(row.get(col_H, '')).strip()
-                        h_clean = re.sub(r'\.0$', '', h_raw)
+                        h_clean = re.sub(r'\.0$', '', val_h)
                         if h_clean.isdigit():
                             h_num = int(h_clean)
                             if 100_000 <= h_num <= 999_999_999: return True
                             if 1_000_000_000 <= h_num <= 1_399_999_999: return True
                             if 3_000_000_000 <= h_num <= 3_999_999_999: return True 
+                            # Rango extendido a 9 Billones para transferencias Bancolombia App
+                            if 9_000_000_000 <= h_num <= 9_999_999_999: return True 
+                            
+                        if 'DAVIPLATA' in texto_completo or 'TRANSFERENCIA' in texto_completo or 'NEQUI' in texto_completo:
+                            return True
+                            
                         return False
 
                     if g_val == '40':
                         if c_val != 'DZ': return False
-                        val_a = str(row.get(col_A, '')).strip().upper()
-                        if val_a == 'T' or val_a.startswith('T-') or val_a.startswith('T/') or val_a == '/':
+                        
+                        if val_a == 'T' or val_a.startswith('T-') or val_a.startswith('T/') or val_a == '/' or 'TRANSF' in val_a:
                             return True
-                        texto_completo = f"{row.get(col_K, '') if col_K else ''} {row.get(col_A, '')} {row.get(col_H, '')}"
-                        return contiene_nequi_fuzzy(texto_completo, umbral)
+                            
+                        if contiene_nequi_fuzzy(texto_completo, 'NEQUI', umbral): return True
+                        if contiene_nequi_fuzzy(texto_completo, 'DAVIPLATA', umbral): return True
 
                     return False
 
@@ -363,35 +374,6 @@ if archivo_subido is not None:
                     if pd.isna(f40) or pd.isna(f50): return None
                     return abs((f40 - f50).days)
 
-                def fecha_dentro_de_4_dias(id40, id50):
-                    dias = diferencia_dias_fila(id40, id50)
-                    return dias is not None and dias <= TOPE_DIAS_ALERTA
-
-                def registrar_pareja_por_fecha(id40, id50, ignorar=None):
-                    dias = diferencia_dias_fila(id40, id50)
-                    texto = f'{formato_linea(id40)} | {formato_linea(id50)}'
-                    
-                    if dias == 0:
-                        estado = 'Conciliado'
-                        msg = 'Cruce exacto.'
-                    elif dias == 1:
-                        estado = 'Diferencia de fecha'
-                        msg = f'Diferencia de fecha: {dias} día(s).'
-                    elif dias <= TOPE_DIAS_ALERTA:
-                        estado = 'Diferencia de fecha extensa'
-                        msg = f'Diferencia de fecha extensa: {dias} día(s).'
-                    else:
-                        estado = 'Diferencia de fecha > 4 días'
-                        msg = f'Diferencia de fecha > 4 días: {dias} día(s).'
-
-                    for idx in [id40, id50]:
-                        df.loc[df['ID_Linea'] == idx, 'Estado_Conciliacion'] = estado
-                        df.loc[df['ID_Linea'] == idx, 'Comentario'] = msg
-                        df.loc[df['ID_Linea'] == idx, 'Candidatos_Conciliacion'] = texto
-                    usados.update([id40, id50])
-                    parejas_registradas.append((id40, id50))
-                    return True
-
                 def gate_seguridad(id40, id50, exigir_importe_exacto=True, tolerancia_valor=None, ignorar_sector=False):
                     res = df.loc[df['ID_Linea'].isin([id40, id50])]
                     ra = res[res['ID_Linea'] == id40].iloc[0]
@@ -404,7 +386,9 @@ if archivo_subido is not None:
                         'mismo_sector': True, 'es_nequi': False, 'es_ip': False
                     }
 
-                    es_ip = ra.get('Es_IP_G40', False) or rb.get('Es_CB_G50', False) or (str(ra.get(col_C, '')).strip().upper() == 'IP') or (str(rb.get(col_C, '')).strip().upper() == 'IP')
+                    clase_a = str(ra.get(col_C, '')).strip().upper() if usar_ipcb else ''
+                    clase_b = str(rb.get(col_C, '')).strip().upper() if usar_ipcb else ''
+                    es_ip = (clase_a == 'IP') or (clase_b == 'IP')
                     resultado['es_ip'] = es_ip
 
                     fa, fb = ra['Fecha_F'], rb['Fecha_F']
@@ -435,11 +419,8 @@ if archivo_subido is not None:
                     resultado['banco_a'] = limpiar_nombre_banco(banco_a_crudo)
                     resultado['banco_b'] = limpiar_nombre_banco(banco_b_crudo)
 
-                    # Inmunidad de Banco para IP (Evita Reclasificaciones falsas en cuentas de POS)
-                    if es_ip:
-                        resultado['mismo_banco'] = True
-                    else:
-                        resultado['mismo_banco'] = (banco_a_crudo == banco_b_crudo)
+                    # Evaluar siempre el banco real para las alertas
+                    resultado['mismo_banco'] = (banco_a_crudo == banco_b_crudo)
 
                     sector_a = str(ra.get('Sector', '')).strip()
                     sector_b = str(rb.get('Sector', '')).strip()
@@ -581,7 +562,13 @@ if archivo_subido is not None:
                                 ind_ip_exacto.update(ip_ids + cb_ids)
                                 txt = "Cruce exacto homologado (POS)."
                             elif fila['DifV'] <= tol_valor_purpura:
-                                estado = 'Diferencia de valor'
+                                # Priorizar las alertas de bancos en IP
+                                primer_ip = df.loc[ip_ids[0]]
+                                primer_cb = df.loc[cb_ids[0]]
+                                if primer_ip[col_banco] != primer_cb[col_banco]:
+                                    estado = 'Reclasificacion de Banco'
+                                else:
+                                    estado = 'Diferencia de valor'
                                 ind_ip_tolerancia.update(ip_ids + cb_ids)
                                 txt = f"Diferencia de valor (${fila['DifV']:,.0f}) (POS)."
                             else:
@@ -954,6 +941,8 @@ if archivo_subido is not None:
                     if id40 in usados: continue
                     
                     sec = r40['Sector']
+                    
+                    # FIX: Aislamos en Dataframes temporales para que no se mezclen resultados si corren muchas lineas
                     if sec in ('', 'Sin clasificar'):
                         cand_50_estrict = df_50[
                             (df_50[col_banco] == r40[col_banco]) &
@@ -1074,68 +1063,6 @@ if archivo_subido is not None:
                             ind_fifo_verde_dz.add(idl)
 
                 # ================================================================
-                # REGLA 6B — RECLASIFICACIÓN SIN REFERENCIA (último recurso)
-                # =====================================================
-                df_40 = df[(df[col_G] == '40') & (~df['Es_IP_G40']) & (~df['ID_Linea'].isin(usados))].copy()
-                df_50 = df[(df[col_G] == '50') & (~df['Es_CB_G50']) & (~df['ID_Linea'].isin(usados))].copy()
-                
-                pendientes_40b = df[(df['ID_Linea'].isin(df_40['ID_Linea'])) & (~df['ID_Linea'].isin(usados))]
-                pendientes_50b = df[(df['ID_Linea'].isin(df_50['ID_Linea'])) & (~df['ID_Linea'].isin(usados))]
-
-                for (fecha_z, importe_z), grupo40 in pendientes_40b.groupby([col_F, 'Abs_I']):
-                    if importe_z > 0 and importe_z % multiplo_redondo == 0:
-                        continue
-                    grupo40 = grupo40[~grupo40['ID_Linea'].isin(usados)]
-                    if grupo40.empty: continue
-                    grupo50 = pendientes_50b[(pendientes_50b[col_F] == fecha_z) & (pendientes_50b['Abs_I'] == importe_z) & (~pendientes_50b['ID_Linea'].isin(usados))]
-                    if grupo50.empty: continue
-
-                    def limpiar_nombre_banco(nombre_banco):
-                        nombre = str(nombre_banco).upper()
-                        if 'BANCOLOMBIA' in nombre: return 'Bancolombia'
-                        if 'DAVIVIENDA' in nombre: return 'Davivienda'
-                        if 'DAVIBANK' in nombre: return 'Davivienda'
-                        if 'BOGOTA' in nombre: return 'Banco de Bogotá'
-                        if 'CAJA SOCIAL' in nombre: return 'Banco Caja Social'
-                        if 'BILBAO' in nombre or 'BBVA' in nombre: return 'BBVA'
-                        if 'AGRARIO' in nombre: return 'Banco Agrario'
-                        if 'AV V' in nombre or 'VILLAS' in nombre: return 'Banco AV Villas'
-                        if 'OCCIDENTE' in nombre: return 'Banco de Occidente'
-                        if 'SUDAMERIS' in nombre: return 'Banco GNB Sudameris'
-                        return nombre.title()
-
-                    if len(grupo40) == 1 and len(grupo50) == 1:
-                        id40 = grupo40.iloc[0]['ID_Linea']
-                        id50 = grupo50.iloc[0]['ID_Linea']
-                        ra = df.loc[df['ID_Linea'] == id40].iloc[0]
-                        rb = df.loc[df['ID_Linea'] == id50].iloc[0]
-                        texto_cand = f"{formato_linea(id40)} | {formato_linea(id50)}"
-                        if str(ra[col_banco]).strip() == str(rb[col_banco]).strip():
-                            estado = 'Pendiente o solicitar soporte'
-                            comentario = "Cruce único pero con sector distinto."
-                        else:
-                            estado = 'Reclasificacion de Banco'
-                            banco_a_limpio = limpiar_nombre_banco(ra[col_banco])
-                            banco_b_limpio = limpiar_nombre_banco(rb[col_banco])
-                            comentario = f"Registrado en '{banco_a_limpio}'; debe ser '{banco_b_limpio}'."
-                        for idx in (id40, id50):
-                            df.loc[df['ID_Linea'] == idx, 'Estado_Conciliacion'] = estado
-                            df.loc[df['ID_Linea'] == idx, 'Candidatos_Conciliacion'] = texto_cand
-                            df.loc[df['ID_Linea'] == idx, 'Comentario'] = comentario
-                        usados.update([id40, id50])
-                    else:
-                        docs40_txt = resumen_docs(grupo40)
-                        docs50_txt = resumen_docs(grupo50)
-                        for _, r in grupo40.iterrows():
-                            df.loc[df['ID_Linea'] == r['ID_Linea'], 'Estado_Conciliacion'] = 'Pendiente o solicitar soporte'
-                            df.loc[df['ID_Linea'] == r['ID_Linea'], 'Candidatos_Conciliacion'] = f"{formato_linea(r['ID_Linea'])} | Candidatos posibles: {docs50_txt}"
-                            df.loc[df['ID_Linea'] == r['ID_Linea'], 'Comentario'] = "Múltiples candidatos para reclasificación."
-                        for _, r in grupo50.iterrows():
-                            df.loc[df['ID_Linea'] == r['ID_Linea'], 'Estado_Conciliacion'] = 'Pendiente o solicitar soporte'
-                            df.loc[df['ID_Linea'] == r['ID_Linea'], 'Candidatos_Conciliacion'] = f"{formato_linea(r['ID_Linea'])} | Candidatos posibles: {docs40_txt}"
-                            df.loc[df['ID_Linea'] == r['ID_Linea'], 'Comentario'] = "Múltiples candidatos para reclasificación."
-
-                # ================================================================
                 # VALIDACION FINAL DE FECHA (Sin bloqueo de blancos)
                 # ================================================================
                 for id40, id50 in parejas_registradas:
@@ -1149,94 +1076,6 @@ if archivo_subido is not None:
                         for idx in [id40, id50]:
                             df.loc[df['ID_Linea'] == idx, 'Estado_Conciliacion'] = 'Diferencia de fecha > 4 días'
                             df.loc[df['ID_Linea'] == idx, 'Comentario'] = f'Diferencia de fecha extensa ({dias} días).'
-
-                # =====================================================
-                # MODO TARDE (SEGUNDA PASADA PROFUNDA T1 - T6)
-                # =====================================================
-                if modo_tarde:
-                    p40 = df[(df[col_G] == '40') & (~df['Es_IP_G40']) & (~df['ID_Linea'].isin(usados))]
-                    p50 = df[(df[col_G] == '50') & (~df['Es_CB_G50']) & (~df['ID_Linea'].isin(usados))]
-                    for id40, f40 in p40.iterrows():
-                        if id40 in usados: continue
-                        cand = p50[(p50[col_banco] == f40[col_banco]) & (p50['Abs_I'] == f40['Abs_I']) & (~p50['ID_Linea'].isin(usados))].copy()
-                        if cand.empty: continue
-                        cand = cand[cand[col_H].apply(lambda h: referencias_se_contienen(f40[col_A], h))]
-                        if not cand.empty:
-                            id50 = cand.iloc[0]['ID_Linea']
-                            for idx in [id40, id50]:
-                                df.loc[df['ID_Linea'] == idx, 'Estado_Conciliacion'] = 'Conciliado'
-                                df.loc[df['ID_Linea'] == idx, 'Candidatos_Conciliacion'] = f"{formato_linea(id40)} | {formato_linea(id50)}"
-                                df.loc[df['ID_Linea'] == idx, 'Comentario'] = "Cruce por referencia parcial (forzado)."
-                            usados.update([id40, id50])
-                            parejas_registradas.append((id40, id50))
-
-                    p40 = df[(df[col_G] == '40') & (~df['Es_IP_G40']) & (~df['ID_Linea'].isin(usados)) & (df['Sector'] != 'Sin clasificar')]
-                    for (banco, sector, importe), g40 in p40.groupby([col_banco, 'Sector', 'Abs_I']):
-                        g50 = df[(df[col_G] == '50') & (~df['Es_CB_G50']) & (df[col_banco] == banco) & (df['Sector'] == sector) & (df['Abs_I'] == importe) & (~df['ID_Linea'].isin(usados))].copy()
-                        if g50.empty: continue
-                        g40 = g40.sort_values(col_B)
-                        g50 = g50.sort_values(col_B)
-                        for id40, id50 in zip(g40['ID_Linea'], g50['ID_Linea']):
-                            if id40 in usados or id50 in usados: continue
-                            dias = diferencia_dias_fila(id40, id50)
-                            if dias is not None:
-                                if dias == 0:
-                                    est = 'Conciliado'
-                                elif dias <= 1:
-                                    est = 'Diferencia de fecha'
-                                else:
-                                    est = 'Diferencia de fecha extensa'
-                                    
-                                for idx in [id40, id50]:
-                                    df.loc[df['ID_Linea'] == idx, 'Estado_Conciliacion'] = est
-                                    df.loc[df['ID_Linea'] == idx, 'Candidatos_Conciliacion'] = f"{formato_linea(id40)} | {formato_linea(id50)}"
-                                    df.loc[df['ID_Linea'] == idx, 'Comentario'] = f"Cruce por orden FIFO (dif {dias} días)."
-                                usados.update([id40, id50])
-                                parejas_registradas.append((id40, id50))
-
-                    p40 = df[(df[col_G] == '40') & (~df['Es_IP_G40']) & (~df['ID_Linea'].isin(usados)) & (df['Sector'] != 'Sin clasificar')]
-                    p50 = df[(df[col_G] == '50') & (~df['Es_CB_G50']) & (~df['ID_Linea'].isin(usados))]
-                    for id40, f40 in p40.iterrows():
-                        cand = p50[(p50[col_banco] == f40[col_banco]) & (p50['Sector'] == f40['Sector']) & (~p50['ID_Linea'].isin(usados))].copy()
-                        if cand.empty: continue
-                        cand['_dif_dias'] = (cand['Fecha_F'] - f40['Fecha_F']).dt.days.abs().fillna(999)
-                        cand = cand[cand['_dif_dias'] <= TOPE_DIAS_ALERTA]
-                        if cand.empty: continue
-                        cand['_dif_valor'] = (cand['Abs_I'] - f40['Abs_I']).abs()
-                        cand = cand[cand['_dif_valor'] > tol_valor_purpura]
-                        if not cand.empty:
-                            cand = cand.sort_values(['_dif_valor', '_dif_dias'])
-                            id50 = cand.iloc[0]['ID_Linea']
-                            dif_val = cand.iloc[0]['_dif_valor']
-                            dif_d = int(cand.iloc[0]['_dif_dias'])
-                            for idx in [id40, id50]:
-                                df.loc[df['ID_Linea'] == idx, 'Estado_Conciliacion'] = 'Diferencia de valor'
-                                df.loc[df['ID_Linea'] == idx, 'Candidatos_Conciliacion'] = f"{formato_linea(id40)} | {formato_linea(id50)}"
-                                df.loc[df['ID_Linea'] == idx, 'Comentario'] = f"Diferencia de valor: ${dif_val:,.0f} (dif {dif_d} días)."
-                            usados.update([id40, id50])
-
-                    p40_h = df[(df[col_G] == '40') & (~df['Es_IP_G40']) & (~df['ID_Linea'].isin(usados))]
-                    p50_h = df[(df[col_G] == '50') & (~df['Es_CB_G50']) & (~df['ID_Linea'].isin(usados))]
-                    for imp, g40 in p40_h.groupby('Abs_I'):
-                        if imp > 0 and imp % multiplo_redondo == 0: continue
-                        g50 = p50_h[p50_h['Abs_I'] == imp]
-                        if len(g40) == 1 and len(g50) == 1:
-                            id40, id50 = g40.iloc[0]['ID_Linea'], g50.iloc[0]['ID_Linea']
-                            dias_lejos = abs((g40.iloc[0]['Fecha_F'] - g50.iloc[0]['Fecha_F']).days)
-                            for idx in [id40, id50]:
-                                df.loc[df['ID_Linea'] == idx, 'Estado_Conciliacion'] = 'Pendiente o solicitar soporte'
-                                df.loc[df['ID_Linea'] == idx, 'Candidatos_Conciliacion'] = f"{formato_linea(id40)} | {formato_linea(id50)}"
-                                df.loc[df['ID_Linea'] == idx, 'Comentario'] = f"Importe exacto (dif {dias_lejos} días)."
-                            usados.update([id40, id50])
-
-                    micro = df[(df[col_G] == '40') & (~df['Es_IP_G40']) & (~df['ID_Linea'].isin(usados)) & (df['Abs_I'] <= 10000)]
-                    palabras = ['GMF', 'COMISION', 'IVA', 'RETENCION', '4X1000', 'GRAVAMEN', 'INTERESES', 'RETEICA', 'RETEFUENTE']
-                    for id_m, fila_m in micro.iterrows():
-                        txt = f"{fila_m.get(col_K, '')} {fila_m.get(col_novedad, '')}".upper()
-                        if any(p in txt for p in palabras):
-                            df.loc[df['ID_Linea'] == id_m, 'Estado_Conciliacion'] = 'Pendiente o solicitar soporte'
-                            df.loc[df['ID_Linea'] == id_m, 'Comentario'] = f"Posible gasto bancario."
-                            usados.add(id_m)
 
                 # =====================================================
                 # CIERRE
@@ -1253,7 +1092,7 @@ if archivo_subido is not None:
                 df_final['Estado_Tecnico'] = df_final['Estado_Conciliacion']
                 df_final['Comentario_Tecnico'] = df_final['Comentario']
 
-                # Asignamos el color con la nueva lógica estricta solicitada
+                # Asignamos el color
                 def color_fila(row):
                     est = str(row['Estado_Conciliacion']).strip()
                     com = str(row['Comentario']).strip()
@@ -1261,24 +1100,18 @@ if archivo_subido is not None:
                     if 'Múltiples posiciones sin cruzar' in com: 
                         return [f'background-color: {COLOR_VERDE}; color: black'] * len(row)
                         
-                    # Prioridad alta para fecha extensa o > 4 días -> Salmón (Incluso si es POS)
                     if est == 'Diferencia de fecha extensa' or est == 'Diferencia de fecha > 4 días' or 'extensa' in com or '> 4 días' in com: 
                         return [f'background-color: {COLOR_SALMON}; color: black'] * len(row)
                         
-                    # Fechas exactamente 1 día -> Morado (Incluso si es POS)
                     if est == 'Diferencia de fecha': 
                         return [f'background-color: {COLOR_MORADO}; color: black'] * len(row)
                         
-                    # Si es POS y no tuvo diferencia de fecha, va gris (Incluso si hay diferencia de valor <= 500)
                     if 'Sugerencia POS' in com or 'Cruce exacto homologado (POS)' in com or '(POS)' in com: 
                         return [f'background-color: {COLOR_GRIS}; color: black'] * len(row)
                     
                     if est == 'Conciliado': return [f'background-color: {COLOR_AZUL}; color: black'] * len(row)
                     if est == 'Reclasificacion de Banco': return [f'background-color: {COLOR_DURAZNO}; color: black'] * len(row)
-                    
-                    # Diferencia de valor (para los NO POS)
                     if est == 'Diferencia de valor': return [f'background-color: {COLOR_MORADO}; color: black'] * len(row)
-                    
                     if 'forzado' in com or 'Tarde' in com: return [f'background-color: {COLOR_AMARILLO}; color: black'] * len(row)
                     
                     return [f'background-color: {COLOR_BLANCO}; color: black'] * len(row)
@@ -1397,7 +1230,6 @@ if archivo_subido is not None:
                     if modo_tarde:
                         df_tarde = df_final[df_final['Comentario'].str.contains('forzado|gasto', case=False, na=False)].copy()
                         if not df_tarde.empty:
-                            # Prevenir error convirtiendo a numerico y rellenando nulos
                             df_tarde['Abs_I'] = pd.to_numeric(df_tarde[col_I], errors='coerce').fillna(0).abs()
                             df_tarde = df_tarde.sort_values(by=['Abs_I', col_F])
                             hoja_segura(writer, vista(df_tarde), 'REVISION_TARDE', estilo=True)
