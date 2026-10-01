@@ -4,6 +4,7 @@
 # FIX 2: Regla Nequi super-flexibilizada (Daviplata, Bancolombia a la mano, Transferencias).
 # FIX 3: Aislamiento bilateral estricto de POS (40 y 50).
 # FIX 4: Colores y pestañas gerenciales ajustadas (Novedades 40, Reclasificaciones).
+# FIX 5: Actualización Modo Tarde (Unificación de pestaña, filtrado de fechas, orden de importe, colores de texto).
 
 import streamlit as st
 import pandas as pd
@@ -11,7 +12,7 @@ import numpy as np
 import io
 import re
 from difflib import SequenceMatcher
-from datetime import datetime
+from datetime import datetime, timedelta
 
 st.set_page_config(page_title="Conciliación Integral CLM", layout="wide")
 st.markdown('''
@@ -55,8 +56,21 @@ with st.expander("⚙️ Parámetros de tolerancia"):
     modo_tarde = st.checkbox(
         "🌅 Activar Casilla 'Tarde' (Segunda pasada en Pendientes)",
         value=False,
-        help="Ejecuta una segunda pasada profunda (T1 a T6) y genera una pestaña ordenada de menor a mayor."
+        help="Ejecuta una segunda pasada y consolida todo en una sola pestaña ordenada por importe, con filtrado especial de fechas."
     )
+
+    if modo_tarde:
+        dia_anterior_festivo = st.checkbox(
+            "🎉 ¿El día anterior fue festivo? (Aplica para eliminar el fin de semana si hoy es martes)",
+            value=False
+        )
+        fecha_operacion = st.date_input(
+            "📅 Fecha actual de la operación",
+            datetime.now().date()
+        )
+    else:
+        dia_anterior_festivo = False
+        fecha_operacion = datetime.now().date()
 
 COLOR_AZUL = "#C5D9F1"      
 COLOR_VERDE = "#A9D18E"     
@@ -1206,6 +1220,38 @@ if archivo_subido is not None:
                 df_final['Estado_Tecnico'] = df_final['Estado_Conciliacion']
                 df_final['Comentario_Tecnico'] = df_final['Comentario']
 
+                # =====================================================
+                # NUEVAS REGLAS: MODO TARDE (BORRADO Y ORDEN)
+                # =====================================================
+                if modo_tarde:
+                    mes_anterior = (fecha_operacion.replace(day=1) - timedelta(days=1)).month
+                    
+                    # Serie temporal para comparaciones
+                    fechas_serie = pd.to_datetime(df_final[col_F], errors='coerce')
+                    
+                    # Regla A: Eliminar clave 50 del mes anterior sin relación (Estado Pendiente)
+                    mask_50_eliminar = (df_final[col_G] == '50') & \
+                                       (fechas_serie.dt.month == mes_anterior) & \
+                                       (df_final['Estado_Conciliacion'].str.contains('Pendiente', na=False))
+                    df_final = df_final[~mask_50_eliminar]
+                    
+                    # Regla B: Eliminar clave 40 de Occidente y Sudameris según días hábiles
+                    dias_borrar = [fecha_operacion]
+                    if dia_anterior_festivo and fecha_operacion.weekday() == 1: # 1 es Martes
+                        # Borrar: Lunes(1), Domingo(2), Sábado(3), Viernes(4)
+                        dias_borrar.extend([fecha_operacion - timedelta(days=i) for i in range(1, 5)])
+                    else:
+                        dias_borrar.append(fecha_operacion - timedelta(days=1)) # Día anterior normal
+                        
+                    mask_40_eliminar = (df_final[col_G] == '40') & \
+                                       (df_final[col_banco].isin(["BANCO DE OCCIDENTE", "BANCO GNB SUDAMERIS"])) & \
+                                       (fechas_serie.dt.date.isin(dias_borrar))
+                    df_final = df_final[~mask_40_eliminar]
+                    
+                    # Regla C: Ordenar todo el DataFrame por la columna de importe (Columna I)
+                    df_final['_temp_sort'] = pd.to_numeric(df_final[col_I], errors='coerce').fillna(0).abs()
+                    df_final = df_final.sort_values(by='_temp_sort', ascending=True).drop(columns=['_temp_sort'])
+
                 # Asignamos el color
                 def color_fila(row):
                     est = str(row['Estado_Conciliacion']).strip()
@@ -1283,77 +1329,77 @@ if archivo_subido is not None:
                         except Exception as e2:
                             advertencias.append(f"Hoja '{nf}': no se pudo escribir ({e2}).")
 
+                def style_rojo_40(val):
+                    # Retorna estilo CSS para pintar el texto de rojo si el valor es '40'
+                    return 'color: red;' if str(val).strip() == '40' else ''
+
                 with pd.ExcelWriter(output, engine='openpyxl') as writer:
                     total_filas = len(df_final)
-                    
                     total_azul = int((df_final['Estado_Conciliacion'] == 'Conciliado').sum())
                     total_durazno = int((df_final['Estado_Conciliacion'] == 'Reclasificacion de Banco').sum())
-                    
                     mask_salmon_color = df_final['Estado_Conciliacion'].str.contains('extensa|> 4 días', na=False)
                     total_salmon = int(mask_salmon_color.sum())
-                    
                     mask_morado_color = df_final['Estado_Conciliacion'].isin(['Diferencia de fecha', 'Diferencia de valor'])
                     total_morado = int(mask_morado_color.sum())
-                    
                     mask_verde = (df_final[col_G] == '40') & df_final['Comentario'].str.contains('Múltiples posiciones sin cruzar', na=False)
                     total_verde = int(mask_verde.sum())
-                    
                     mask_gris = df_final['Comentario'].str.contains('POS', na=False)
                     total_gris = int(mask_gris.sum())
-                    
                     total_pendiente = int(df_final['Estado_Conciliacion'].str.contains('Pendiente', na=False).sum())
                     
                     resumen = pd.DataFrame({
                         "Métrica": [
                             "Fecha de procesamiento", "Total filas procesadas",
-                            "Azul - Conciliados Exactos",
-                            "Gris - Cruces IP/CB (POS o Suma sugerida)",
-                            "Verde - Documentos DZ multiposición sin conciliar",
-                            "Morado - Diferencia de valor O fecha de 1 día",
-                            "Salmón - Diferencia de fecha (> 1 día)",
-                            "Durazno - Reclasificación de banco",
-                            "Blanco - Pendientes / Otras Sugerencias",
-                            "Filas excluidas (sin doc/clave)"
+                            "Azul - Conciliados Exactos", "Gris - Cruces IP/CB (POS)",
+                            "Verde - Documentos DZ multiposición", "Morado - Diferencia valor/fecha 1d",
+                            "Salmón - Diferencia de fecha (> 1 día)", "Durazno - Reclasificación banco",
+                            "Blanco - Pendientes", "Filas excluidas"
                         ],
                         "Valor": [
                             datetime.now().strftime('%d/%m/%Y %H:%M'), total_filas,
-                            total_azul, total_gris, total_verde, total_morado, total_salmon, total_durazno,
-                            total_pendiente, filas_excluidas
+                            total_azul, total_gris, total_verde, total_morado, 
+                            total_salmon, total_durazno, total_pendiente, filas_excluidas
                         ]
                     })
                     resumen.to_excel(writer, index=False, sheet_name='RESUMEN')
                     pestanas_usadas.add('RESUMEN')
 
-                    # ACTUALIZACIÓN: NOVEDADES_Y_PENDIENTES_40
-                    df_nov = df_final[df_final[col_G] == '40'].copy()
-                    mask_alerta = ~df_nov['Estado_Conciliacion'].isin(['Conciliado', 'Cruce Múltiple IP/CB'])
-                    
-                    df_nov = df_nov[mask_alerta]
-                    if not df_nov.empty:
-                        df_nov = df_nov.sort_values(by=['Estado_Conciliacion', col_I])
-                        hoja_segura(writer, vista(df_nov), 'NOVEDADES_Y_PENDIENTES_40', estilo=True)
-                    else:
-                        hoja_segura(writer, pd.DataFrame(columns=columnas_visibles), 'NOVEDADES_Y_PENDIENTES_40', estilo=False)
-
-                    # ACTUALIZACIÓN: REVISAR RECLASIFICACIONES
-                    df_reclass = df_final[df_final['Estado_Conciliacion'] == 'Reclasificacion de Banco'].copy()
-                    if not df_reclass.empty:
-                        df_reclass = df_reclass.sort_values(by=[col_banco, col_I, col_F, col_H, col_B])
-                        hoja_segura(writer, vista(df_reclass), 'REVISAR_RECLASIFICACIONES', estilo=True)
-                    else:
-                        hoja_segura(writer, pd.DataFrame(columns=columnas_visibles), 'REVISAR_RECLASIFICACIONES', estilo=False)
-
                     if modo_tarde:
-                        df_tarde = df_final[df_final['Comentario'].str.contains('forzado|gasto', case=False, na=False)].copy()
-                        if not df_tarde.empty:
-                            df_tarde['Abs_I'] = pd.to_numeric(df_tarde[col_I], errors='coerce').fillna(0).abs()
-                            df_tarde = df_tarde.sort_values(by=['Abs_I', col_F])
-                            hoja_segura(writer, vista(df_tarde), 'REVISION_TARDE', estilo=True)
+                        # MODO TARDE: Todo en una sola pestaña
+                        df_vista_tarde = vista(df_final)
+                        if not df_vista_tarde.empty:
+                            styler = df_vista_tarde.style.apply(lambda row: color_fila(row), axis=1)
+                            
+                            # Aplicar texto rojo a la columna de clave (G)
+                            if col_G in df_vista_tarde.columns:
+                                if hasattr(styler, 'map'):
+                                    styler = styler.map(style_rojo_40, subset=[col_G])
+                                else:
+                                    styler = styler.applymap(style_rojo_40, subset=[col_G])
+                                    
+                            styler.to_excel(writer, index=False, sheet_name='CONCILIACION_TARDE_UNIFICADA')
+                    else:
+                        # MODO NORMAL: Separación original por pestañas
+                        df_nov = df_final[df_final[col_G] == '40'].copy()
+                        mask_alerta = ~df_nov['Estado_Conciliacion'].isin(['Conciliado', 'Cruce Múltiple IP/CB'])
+                        df_nov = df_nov[mask_alerta]
+                        if not df_nov.empty:
+                            df_nov = df_nov.sort_values(by=['Estado_Conciliacion', col_I])
+                            hoja_segura(writer, vista(df_nov), 'NOVEDADES_Y_PENDIENTES_40', estilo=True)
+                        else:
+                            hoja_segura(writer, pd.DataFrame(columns=columnas_visibles), 'NOVEDADES_Y_PENDIENTES_40', estilo=False)
 
-                    for banco in b_unicos:
-                        df_b = df_final[df_final[col_banco] == banco].copy().sort_values(by=col_I, ascending=True)
-                        if df_b.empty: continue
-                        hoja_segura(writer, vista(df_b), str(banco), estilo=True)
+                        df_reclass = df_final[df_final['Estado_Conciliacion'] == 'Reclasificacion de Banco'].copy()
+                        if not df_reclass.empty:
+                            df_reclass = df_reclass.sort_values(by=[col_banco, col_I, col_F, col_H, col_B])
+                            hoja_segura(writer, vista(df_reclass), 'REVISAR_RECLASIFICACIONES', estilo=True)
+                        else:
+                            hoja_segura(writer, pd.DataFrame(columns=columnas_visibles), 'REVISAR_RECLASIFICACIONES', estilo=False)
+
+                        for banco in b_unicos:
+                            df_b = df_final[df_final[col_banco] == banco].copy().sort_values(by=col_I, ascending=True)
+                            if df_b.empty: continue
+                            hoja_segura(writer, vista(df_b), str(banco), estilo=True)
 
                     if not filas_descartadas.empty:
                         hoja_segura(writer, vista(filas_descartadas), 'DESCARTADAS_SIN_DOC_O_CT', estilo=False)
