@@ -4,7 +4,7 @@
 # FIX 2: Regla Nequi super-flexibilizada (Daviplata, Bancolombia a la mano, Transferencias).
 # FIX 3: Aislamiento bilateral estricto de POS (40 y 50).
 # FIX 4: Colores y pestañas gerenciales ajustadas (Novedades 40, Reclasificaciones).
-# FIX 5: Actualización Modo Tarde (Unificación de pestaña, filtrado de fechas, orden de importe, colores de texto).
+# FIX 5: Valores positivos col I, consolidación modo tarde, borrados especiales (fechas/festivos), y color rojo clave 40.
 
 import streamlit as st
 import pandas as pd
@@ -53,24 +53,26 @@ with st.expander("⚙️ Parámetros de tolerancia"):
     )
 
     st.divider()
-    modo_tarde = st.checkbox(
-        "🌅 Activar Casilla 'Tarde' (Segunda pasada en Pendientes)",
-        value=False,
-        help="Ejecuta una segunda pasada y consolida todo en una sola pestaña ordenada por importe, con filtrado especial de fechas."
-    )
-
-    if modo_tarde:
-        dia_anterior_festivo = st.checkbox(
-            "🎉 ¿El día anterior fue festivo? (Aplica para eliminar el fin de semana si hoy es martes)",
-            value=False
+    
+    # NUEVA UI PARA MODO TARDE Y FESTIVO
+    col_t1, col_t2, col_t3 = st.columns(3)
+    with col_t1:
+        modo_tarde = st.checkbox(
+            "🌅 Activar Casilla 'Tarde' (Segunda pasada en Pendientes)",
+            value=False,
+            help="Ejecuta limpieza de fechas, consolida en 1 pestaña y ordena por importe."
         )
+    with col_t2:
+        dia_anterior_festivo = st.checkbox(
+            "🎉 ¿Día anterior fue festivo?",
+            value=False,
+            help="Si hoy es Martes y marcas esto, borrará registros de Lunes, Domingo, Sábado y Viernes."
+        )
+    with col_t3:
         fecha_operacion = st.date_input(
-            "📅 Fecha actual de la operación",
+            "📅 Fecha de la operación",
             datetime.now().date()
         )
-    else:
-        dia_anterior_festivo = False
-        fecha_operacion = datetime.now().date()
 
 COLOR_AZUL = "#C5D9F1"      
 COLOR_VERDE = "#A9D18E"     
@@ -168,8 +170,10 @@ if archivo_subido is not None:
 
                 df[col_G] = df[col_G].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
                 df[col_banco] = df[col_banco].astype(str).str.strip()
-                df[col_I] = pd.to_numeric(df[col_I], errors='coerce').fillna(0)
-                df['Abs_I'] = df[col_I].abs()
+                
+                # MODIFICACIÓN: Todos los valores de Columna I deben ser positivos desde el inicio
+                df[col_I] = pd.to_numeric(df[col_I], errors='coerce').fillna(0).abs()
+                df['Abs_I'] = df[col_I]
 
                 df['Fecha_F'] = pd.to_datetime(df[col_F], errors='coerce', dayfirst=True)
                 df[col_F] = df['Fecha_F'].dt.date
@@ -896,7 +900,6 @@ if archivo_subido is not None:
 
                     id50 = posibles.sort_values(['_dif_valor', '_dif_dias']).iloc[0]['ID_Linea']
                     
-                    # CORRECCIÓN: Evita el KeyError al obtener el valor del candidato
                     valor_candidato = df.loc[df['ID_Linea'] == id50, 'Abs_I'].iloc[0]
                     diferencia = round(abs(fila40['Abs_I'] - valor_candidato), 2)
                     
@@ -1004,7 +1007,7 @@ if archivo_subido is not None:
 
                     procesar_candidato_nequi(id40, cand_50_estrict)
 
-                # Pasada flexible (CORRECCIÓN de protección de variables)
+                # Pasada flexible
                 for _, r40 in df_nequi_40.iterrows():
                     id40 = r40['ID_Linea']
                     if id40 in usados: continue
@@ -1206,7 +1209,7 @@ if archivo_subido is not None:
                             usados.add(id_m)
 
                 # =====================================================
-                # CIERRE
+                # CIERRE Y REGLAS ESPECIALES TARDE
                 # =====================================================
                 sin_p = df['Estado_Conciliacion'] == 'Pendiente'
                 if usar_ipcb:
@@ -1221,60 +1224,69 @@ if archivo_subido is not None:
                 df_final['Comentario_Tecnico'] = df_final['Comentario']
 
                 # =====================================================
-                # NUEVAS REGLAS: MODO TARDE (BORRADO Y ORDEN)
+                # NUEVAS REGLAS DE BORRADO Y ORDEN (SOLO SI ES MODO TARDE)
                 # =====================================================
                 if modo_tarde:
                     mes_anterior = (fecha_operacion.replace(day=1) - timedelta(days=1)).month
-                    
-                    # Serie temporal para comparaciones
                     fechas_serie = pd.to_datetime(df_final[col_F], errors='coerce')
                     
-                    # Regla A: Eliminar clave 50 del mes anterior sin relación (Estado Pendiente)
+                    # 1. Eliminar clave 50 del mes anterior sin relación (Estado Pendiente)
                     mask_50_eliminar = (df_final[col_G] == '50') & \
                                        (fechas_serie.dt.month == mes_anterior) & \
                                        (df_final['Estado_Conciliacion'].str.contains('Pendiente', na=False))
                     df_final = df_final[~mask_50_eliminar]
                     
-                    # Regla B: Eliminar clave 40 de Occidente y Sudameris según días hábiles
+                    # 2. Eliminar clave 40 de Occidente y Sudameris según días hábiles
                     dias_borrar = [fecha_operacion]
-                    if dia_anterior_festivo and fecha_operacion.weekday() == 1: # 1 es Martes
-                        # Borrar: Lunes(1), Domingo(2), Sábado(3), Viernes(4)
+                    if dia_anterior_festivo and fecha_operacion.weekday() == 1: # 1 equivale a Martes
+                        # Borrar Lunes(1), Domingo(2), Sábado(3), Viernes(4)
                         dias_borrar.extend([fecha_operacion - timedelta(days=i) for i in range(1, 5)])
                     else:
-                        dias_borrar.append(fecha_operacion - timedelta(days=1)) # Día anterior normal
+                        dias_borrar.append(fecha_operacion - timedelta(days=1)) # Solo ayer normal
                         
                     mask_40_eliminar = (df_final[col_G] == '40') & \
                                        (df_final[col_banco].isin(["BANCO DE OCCIDENTE", "BANCO GNB SUDAMERIS"])) & \
                                        (fechas_serie.dt.date.isin(dias_borrar))
                     df_final = df_final[~mask_40_eliminar]
                     
-                    # Regla C: Ordenar todo el DataFrame por la columna de importe (Columna I)
-                    df_final['_temp_sort'] = pd.to_numeric(df_final[col_I], errors='coerce').fillna(0).abs()
+                    # 3. Ordenar por la columna de importe I
+                    df_final['_temp_sort'] = pd.to_numeric(df_final[col_I], errors='coerce').fillna(0)
                     df_final = df_final.sort_values(by='_temp_sort', ascending=True).drop(columns=['_temp_sort'])
 
-                # Asignamos el color
+                # MODIFICADO: Estilos, colores de fondo e inyección de color rojo de texto para Clave 40
                 def color_fila(row):
-                    est = str(row['Estado_Conciliacion']).strip()
-                    com = str(row['Comentario']).strip()
+                    est = str(row.get('Estado_Conciliacion', '')).strip()
+                    com = str(row.get('Comentario', '')).strip()
+                    clave = str(row.get(col_G, '')).strip()
+                    
+                    # Determinar si la fuente va roja o negra según la Clave (40)
+                    color_txt = "red" if clave == "40" else "black"
                     
                     if 'Múltiples posiciones sin cruzar' in com: 
-                        return [f'background-color: {COLOR_VERDE}; color: black'] * len(row)
+                        return [f'background-color: {COLOR_VERDE}; color: {color_txt}'] * len(row)
                         
                     if est == 'Diferencia de fecha extensa' or est == 'Diferencia de fecha > 4 días' or 'extensa' in com or '> 4 días' in com: 
-                        return [f'background-color: {COLOR_SALMON}; color: black'] * len(row)
+                        return [f'background-color: {COLOR_SALMON}; color: {color_txt}'] * len(row)
                         
                     if est == 'Diferencia de fecha': 
-                        return [f'background-color: {COLOR_MORADO}; color: black'] * len(row)
+                        return [f'background-color: {COLOR_MORADO}; color: {color_txt}'] * len(row)
                         
                     if 'Sugerencia POS' in com or 'Cruce exacto homologado (POS)' in com or '(POS)' in com: 
-                        return [f'background-color: {COLOR_GRIS}; color: black'] * len(row)
+                        return [f'background-color: {COLOR_GRIS}; color: {color_txt}'] * len(row)
                     
-                    if est == 'Conciliado': return [f'background-color: {COLOR_AZUL}; color: black'] * len(row)
-                    if est == 'Reclasificacion de Banco': return [f'background-color: {COLOR_DURAZNO}; color: black'] * len(row)
-                    if est == 'Diferencia de valor': return [f'background-color: {COLOR_MORADO}; color: black'] * len(row)
-                    if 'forzado' in com or 'Tarde' in com: return [f'background-color: {COLOR_AMARILLO}; color: black'] * len(row)
+                    if est == 'Conciliado': 
+                        return [f'background-color: {COLOR_AZUL}; color: {color_txt}'] * len(row)
+                        
+                    if est == 'Reclasificacion de Banco': 
+                        return [f'background-color: {COLOR_DURAZNO}; color: {color_txt}'] * len(row)
+                        
+                    if est == 'Diferencia de valor': 
+                        return [f'background-color: {COLOR_MORADO}; color: {color_txt}'] * len(row)
+                        
+                    if 'forzado' in com or 'Tarde' in com: 
+                        return [f'background-color: {COLOR_AMARILLO}; color: {color_txt}'] * len(row)
                     
-                    return [f'background-color: {COLOR_BLANCO}; color: black'] * len(row)
+                    return [f'background-color: {COLOR_BLANCO}; color: {color_txt}'] * len(row)
 
                 columnas_visibles = columnas_originales + ['Estado_Conciliacion', 'Comentario', 'Candidatos_Conciliacion', 'Sector']
 
@@ -1319,7 +1331,7 @@ if archivo_subido is not None:
                     nf = nombre_pestana(nombre)
                     try:
                         if estilo and not df_hoja.empty:
-                            df_hoja.style.apply(lambda row: color_fila(row), axis=1).to_excel(writer, index=False, sheet_name=nf)
+                            df_hoja.style.apply(color_fila, axis=1).to_excel(writer, index=False, sheet_name=nf)
                         else:
                             df_hoja.to_excel(writer, index=False, sheet_name=nf)
                     except Exception as e1:
@@ -1329,10 +1341,9 @@ if archivo_subido is not None:
                         except Exception as e2:
                             advertencias.append(f"Hoja '{nf}': no se pudo escribir ({e2}).")
 
-                def style_rojo_40(val):
-                    # Retorna estilo CSS para pintar el texto de rojo si el valor es '40'
-                    return 'color: red;' if str(val).strip() == '40' else ''
-
+                # =====================================================
+                # ESCRITURA EXCEL FINAL Y LÓGICA DE PESTAÑAS (TARDE VS NORMAL)
+                # =====================================================
                 with pd.ExcelWriter(output, engine='openpyxl') as writer:
                     total_filas = len(df_final)
                     total_azul = int((df_final['Estado_Conciliacion'] == 'Conciliado').sum())
@@ -1365,21 +1376,13 @@ if archivo_subido is not None:
                     pestanas_usadas.add('RESUMEN')
 
                     if modo_tarde:
-                        # MODO TARDE: Todo en una sola pestaña
+                        # MODO TARDE: Única pestaña con toda la información (Sin separar bancos)
                         df_vista_tarde = vista(df_final)
                         if not df_vista_tarde.empty:
-                            styler = df_vista_tarde.style.apply(lambda row: color_fila(row), axis=1)
-                            
-                            # Aplicar texto rojo a la columna de clave (G)
-                            if col_G in df_vista_tarde.columns:
-                                if hasattr(styler, 'map'):
-                                    styler = styler.map(style_rojo_40, subset=[col_G])
-                                else:
-                                    styler = styler.applymap(style_rojo_40, subset=[col_G])
-                                    
+                            styler = df_vista_tarde.style.apply(color_fila, axis=1)
                             styler.to_excel(writer, index=False, sheet_name='CONCILIACION_TARDE_UNIFICADA')
                     else:
-                        # MODO NORMAL: Separación original por pestañas
+                        # MODO NORMAL: Separación por pestañas gerenciales y por banco
                         df_nov = df_final[df_final[col_G] == '40'].copy()
                         mask_alerta = ~df_nov['Estado_Conciliacion'].isin(['Conciliado', 'Cruce Múltiple IP/CB'])
                         df_nov = df_nov[mask_alerta]
@@ -1401,6 +1404,7 @@ if archivo_subido is not None:
                             if df_b.empty: continue
                             hoja_segura(writer, vista(df_b), str(banco), estilo=True)
 
+                    # Pestaña para errores de lectura independiente del modo
                     if not filas_descartadas.empty:
                         hoja_segura(writer, vista(filas_descartadas), 'DESCARTADAS_SIN_DOC_O_CT', estilo=False)
 
